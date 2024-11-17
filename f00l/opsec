@@ -1,0 +1,106 @@
+Finally taking the plunge to share thoughts that have been brewing in the recesses of my mind. So, what’s the scoop? It’s all about the intricate dance of OPSEC, or OPERATIONS SECURITY. For those who fancy a formal definition, OPSEC is the art of evaluating whether our moves are visible to potential threats, assessing the risk of compromising information, and then taking calculated measures to thwart those who seek to exploit our critical data.
+
+Diving into the tactical realm, OPSEC emerged officially in 1966 during the US’s Operation Purple Dragon, spurred by the need to investigate operational mishaps and devise a pre-operation process to dodge fatal compromises. If you’re feeling historical, check it out here: purple_dragon.pdf 45
+
+Core Principles
+In a nutshell, OPSEC boils down to one thing: control. Control over information and actions, to prevent any attempts at turning them against you. Whether you’re immersed in threat intelligence collection, a red team engagement, or just nosing around an investigation, OPSEC is the guardian angel watching over it all. While the textbooks swear by five sacred steps, we’re zooming in on a couple, starting with the core of Identifying and Analyzing Threats && Vulnerabilities. Picture a process that unveils the adversary’s watchful gaze, details the information they crave, and pinpoints your Achilles’ heels. That’s just the kickoff. We then pivot to Assessing Risks and strategically applying Appropriate Countermeasures. Quick heads-up: I’m spinning this yarn with a big ol’ focus on Anonymity and Privacy.
+
+Now, whether you’re a soldier, a civilian, or somewhere in the murky in-between, safeguarding your critical information is non-negotiable. This isn’t just a 9-to-5 deal it extends to your home. OPSEC isn’t just for the field; it’s your shield against personal info leaks and safeguarding sensitive details from turning into weapons against you. From PII and financial data to your daily grind, address, and personal records, OPSEC’s got your back. Stick around, and we’ll navigate the cyber, hopping between topics, unraveling my train of thought. By the time we wrap this up, it should all click into place.
+
+Identifying and Analyzing Threats && Vulnerabilities
+Alright, let’s demystify the Identification of Critical Information. In plain speak, it’s about pinpointing what needs safeguarding to pull off the operation without a hitch. Be it your source IP address, the tools of the trade, or the intricate web of your command and control (C&C) infrastructure – make it crystal clear. Enter CALI (Capabilities, Activities, Limitations, and Intentions), a straightforward checklist outlining the operation’s must-haves. But before I dive into the deep end and potentially befuddle you, let’s ease into it with a high-level overview and a dash of shenanigans.
+
+Now, let’s get down to the internet. IP – the gateway to the online realm. Your connection to the internet is marked by an IP provided by your trusty ISP (Internet Service Provider), a key linked to an entry in their database. Most countries, ever-vigilant, have data retention regulations, forcing ISPs to log who’s using what IP when, for years on end. If that origin IP leaks, it’s a breadcrumb trail straight to you. Oh, and good luck accessing the internet in many places without coughing up some form of identification to your provider. https://en.wikipedia.org/wiki/IP_address 6
+
+Now, DNS. Standing for “Domain Name System,” it’s the wizard behind the curtain, helping your browser find the IP address of a service. Think of it as a colossal contact list – ask for a name, and it hands you the number. When your browser wants to visit, say, 0x00sec via 0x00sec.org 3, it ping-pongs with a DNS service to unveil the IP addresses of 0x00sec’s servers.
+
+Typically, your ISP dishes out the DNS service, automatically set up by the network you’re on. So, you type 0x00sec.com into your browser, and the request embarks on an internet journey, hopping from DNS resolver to root nameserver to TLD server, and finally, to the domain’s nameserver. All this dance reveals the IP address of 0x00sec.com, which then travels back to your browser, completing the ritual. For a deeper dive, check out: https://www.cloudflare.com/learning/dns/what-is-dns/ 13
+
+But here’s the kicker – most of these DNS requests cruise unencrypted. Even if you’re surfing in incognito mode, or HTTPS, your browser might be casually throwing unencrypted DNS requests out there, saying, “Hey, what’s the IP address of www.pornhub.com 6?”. Not exactly covert, right?
+
+Now that we’ve paved the way and you’ve got the basics down, let’s talk about fortifying your privacy. Enter encrypted DNS, DNS over HTTPS or DNS over TLS. You can set up your private DNS server, self-hosted with something like pi-hole or remotely hosted with the likes of nextdns or the 1.1.1.1 within the Tor network. Sounds like airtight privacy, right? Well, not entirely.
+
+You can’t don the cloak of Tor all the time – it’s like shouting, “Hey, look at me!” and that’s not our game plan. To dodge unnecessary attention, we introduce VPNs and Tor, tag-teaming to keep your ISP and any nosy third party from eavesdropping or blocking your DNS requests. We’ll unpack this intricate dance in more detail down the road.
+
+We’ve got a glaring gap to address here – MAC addresses, a pivotal piece of the puzzle. Your MAC address, acting as a unique ID for your network interface, can become a tracking beacon if left unrandomized. Big players like Microsoft and Apple, along with device manufacturers, maintain logs with MAC addresses, creating a traceable trail linking devices to specific accounts. Even if you think you’ve slipped under the radar by buying your gadget “anonymously”, surveillance tactics, from CCTV footage to mobile provider antenna logs, might expose your identity. So, randomizing your MAC becomes a non-negotiable move. Concealing both your MAC and Bluetooth addresses is paramount. Operating systems like Android, iOS, Linux, and Windows 10 offer MAC address randomization, or you can wield tools like GitHub - alobbs/macchanger: GNU MAC Changer 10
+
+But hold up, home routers and WiFi access points are keeping tabs on connected devices, and ISPs can remotely access and analyze this info.
+
+Shifting gears to Bluetooth MAC addresses, they’re not off the hook from the tracking game. Manufacturers and OS providers log this data, potentially connecting it to sale details or accounts. Despite the safeguards in operating systems, vulnerabilities persist. To amp up your privacy and minimize tracking, consider disabling Bluetooth in the BIOS/UEFI settings or within the operating system. In the Windows realm, shutting down the Bluetooth device in the device manager can force randomization. Or, for a hassle-free solution, consider rocking a Linux system.
+
+Threat Analysis
+Now, let’s unpack Threat Analysis in layman’s terms. It’s all about getting to know your adversaries inside out and identifying what’s on the line. Picture this: the threat of your source IP, network, or fingerprint being exposed. This becomes especially critical when dealing with malware samples – slip up, and your investigation might be blown. For those donning the hat of adversary hunters, safeguarding your identity as a researcher is paramount. Some adversaries aren’t above trying to infect or exploit researchers with malware. Let’s break it down step by step:
+
+Imagine you’re using Windows or macOS for your school or work research, everyday internet surfing, perhaps even employing a privacy VPN like mullvad. You write code, edit photos, keep things normal. Password managers, disk encryption, and backups on encrypted external disks are part of the routine. This is your main OS – clean, nothing shady. Stick to regular emails, social networks, bookmarks, visited sites, and your Wi-Fi access point. This is for your public face, providing plausible deniability when the need arises. Check out https://opsec101.org/ 34
+
+Next, you’ve got a private VM for malware analysis, maybe even dabbling in writing or reverse engineering malware. Same drill – encrypted traffic routing. This VM is your privacy haven, guarding against a softer adversary.
+
+And then, the pièce de résistance – the Hidden OS, where you carry out anonymous activities from a VM within this clandestine setup. All network traffic from your client VM is routed through a Gateway VM, a Tor Network conductor that directs (torifies) all traffic into the Tor Network – essentially, a network “kill switch.” The VM itself, basking in internet connectivity through a Tor Network Gateway, hooks up to your cash-paid VPN service through Tor. DNS leaks to your ISP? Impossible, thanks to the isolated network that mandates a journey through Tor, come what may.
+
+Sure, Tor alone might raise eyebrows on many platforms, resulting in pesky captchas, errors, and challenges. But this multi-layered approach significantly slashes the odds of your adversaries easily de-anonymizing you. Now, you might ask about using Tor over VPN instead of VPN over Tor. Well, your VPN provider is just another ISP, aware of your origin IP, making de-anonymization a breeze. Connecting to various services using the IP of a Tor Exit Node? That’s a red flag in many places.
+
+Enter Whonix, a linchpin in the anonymization process. Whonix, a Linux distribution, rolls out two Virtual Machines:
+
+The Whonix Workstation (your go-to for anonymous activities)
+The Whonix Gateway (establishing a connection to the Tor network and routing all network traffic from the Workstation through the Tor network).
+You’ve got two routes here – the Whonix-only route, where all traffic journeys through the Tor Network, and the Whonix hybrid route, where everything goes through a cash-paid VPN over the Tor Network. Choose your adventure wisely.
+
+Hold up, an anonymous (cash-paid) VPN subscription? You’re probably thinking, “Are you kidding me?” Aren’t you the one talking shit about VPNs? Well, kind of. I’m usually referring to third-party VPNs and recommending renting a VPS to bootstrap an open-source VPN server! (Check out these guides: ProPrivacy 10 and Medium 2) But let’s keep it real here. You need a VPN that’s not leaving any traces in the financial system back to you. This VPN will come into play later when you want to connect to various services incognito, but never directly from your IP. Why? Because trusting VPNs is like treading on thin ice. Only unleash this new VPN account when explicitly directed, and never connect to it using your usual connections. The plan is to employ this VPN within a Virtual Machine in a secure manner because, let’s face it, we don’t trust those VPN providers’ “no-logging policies.” Your origin IP should forever remain a mystery to the VPN provider.
+
+This serves two crucial purposes: first, all your traffic gets a cozy cloak of anonymity through Tor, and second, by keeping your personal and digital lives on separate tracks, you dodge any accidental mix-ups.
+
+Now, I’ve delved into the complexity and limitations of using VPN and Tor simultaneously in a previous post 3, but let’s circle back and revisit the essentials.
+
+Even the Tor project devs say a big “No” to VPN with Tor?, but only for advanced users. However, It’s complicated. It depends on your threat model and how well you configure everything. Here are the facts: your ISP is DEFINITELY logging your activities, a VPN is MAYBE logging your activities. Another fact is routing your Tor traffic through a VPN is no guarantee of hiding your Tor usage. Your Tor usage and even your browsing patterns might be revealed through traffic fingerprints. So, man, it really depends on you.
+
+Vulnerability Analysis && Risk Assessment
+Now, let’s delve into identifying vulnerabilities – the weak spots adversaries are itching to exploit. The Tor Project, while a formidable force, isn’t an impervious fortress against global adversaries, as laid out in the Tor design document here 3. Successful attacks against Tor have left their mark, and various advanced techniques boasting a remarkable 96% success rate in fingerprinting encrypted traffic have emerged over the years, laying bare the websites you’ve visited. Consider major platforms like Twitter and Facebook. While Tor is often associated with accessing these sites in censored countries, things get dicey when users toss in their real names, pictures, and link their accounts to personal info like emails and phone numbers. The anonymity offered by Tor starts losing its mojo in such scenarios. Moreover, platforms can employ algorithms to scrutinize your browsing behavior, spotting patterns, and potentially connecting you to other profiles.
+
+Though it’s unclear if governments tap into such data, the possibility lingers. Basic information can inadvertently lead back to you. Your digital fingerprint, a unique blend of how you write, behave, click, and browse – from fonts to screen resolution, operating system, and model – can be triangulated to follow you as you navigate the web. This is what we call Fingerprinting – the art of identifying someone based on these behavioral patterns. Even seemingly trivial details like slangs or spelling quirks could potentially unveil your identity. Platforms like Google and Meta can leverage this information, mapping it to your past online activities. The internet is rife with pseudonyms, but the majority are anything but anonymous and can be effortlessly traced back to their real identities.
+
+Also, ensure you disable Bluetooth, biometrics, webcam, and microphone. Enable BIOS/UEFI password, and disable USB/HDMI. These measures help keep things in check and fend off certain attacks. And whatever you do, don’t leave your laptop unattended in your hotel room or elsewhere. Make it as challenging as possible for anyone to tamper with it without raising alarms.
+
+Now, let’s talk about something you carry every day – your phone. Phones come with IMEI (International Mobile Equipment Identity) and IMSI (International Mobile Subscriber Identity) numbers. The IMEI is tied directly to your phone, known by mobile operators, and tracked each time your phone connects to the network. Changing the IMEI is possible but not straightforward, making it easier to opt for an old burner phone for anonymity.
+
+The IMSI is linked to your mobile subscription or pre-paid plan and is hardcoded on the SIM card. Like the IMEI, it’s used by apps and OS for identification. Some EU countries maintain a database of IMEI/IMSI associations for law enforcement.
+
+Tracing back IMEI and IMSI to you is a reality. Mobile Operator Subscriber Logs store IMEI and IMSI, linking them to subscriber information. IMEI and IMSI, along with connection data, are logged for precise tracking through signal triangulation, unveiling connections to other known phones.
+
+Manufacturers trace phone sales using IMEI. Even if bought anonymously, they can correlate this info with other phones present at the time, utilizing antenna logs. IMSI is tied to the buyer’s identity, and even in countries allowing cash purchases, details like where and when it was bought can be retrieved.
+
+Google/Apple logs IMEI/IMSI tied to accounts and user history. Government agencies deploy IMSI catchers to force a specific IMSI to connect, enabling various attacks.
+
+Geolocation isn’t solely done through mobile antennas triangulation; it involves WIFIs and Bluetooth devices around you. Google and Apple maintain a database of most WIFI access points and Bluetooth devices and their locations. When your smartphone is on, it scans passively (unless disabled in settings) WIFI access points and Bluetooth devices, allowing them to provide accurate locations even when GPS is off. However, this feature also lets them keep a record of all Bluetooth devices globally for tracking purposes.
+
+For maximum anonymity, use a burner phone with an unlinked IMEI and an IMSI not tied to you. Purchase these in a secure location using cash, and don’t bring your primary phone during the purchase. Never power on the burner phone in a traceable location, especially not where your known smartphone is located, to maintain maximum anonymity during setup and occasional verification.
+
+Note: Don’t take your smartphone with you during sensitive activities if you want to keep them secret. Just leave it at home.
+
+Your devices can be tracked even when powered off. Such devices continue to broadcast identity information to nearby devices using Bluetooth Low-Energy, even when they are turned off. While they don’t have direct access to the devices not connected to the internet.
+
+Your devices are like silent informants, even when powered off. They persistently broadcast identity information via Bluetooth Low-Energy to nearby devices, creating a potential trail. While they lack direct access to devices not connected to the internet, their subtle transmissions reveal more than you might think.
+
+Your smartphone, diligently records everything from your voice commands (“Hey Siri,” “Hey Google”) to your every move (Bluetooth devices, Wi-Fi access points), activities (steps, screen time, connected devices data), and network locations. It captures images and videos, and likely has access to your logs, including social media, messaging, and financial accounts. It’s not just your smartphone; other smart devices – Apple Watch, Android Smartwatch, fitness devices, smart speakers (Amazon Alexa), and more – join the surveillance party.
+
+When gearing up for anonymous or sensitive activities, it’s prudent to leave your smart devices behind. They can identify your device and store the location in a database, which might be accessed by third parties or the devices themselves for various purposes. Even when turned off, your smartphone may not be as dormant as you think, as highlighted in this threatpost article 4.
+
+Let’s talk about Metadata – the information about your activities without delving into the actual content. Imagine knowing you had a call from an oncologist followed by calls to family and friends. Though the conversation details elude us, the metadata hints at its nature.
+
+Smartphones, operating systems (Android/IOS), browsers, apps, and websites are avid collectors of your metadata, often including your location. Numerous companies likely know your precise location at any time, courtesy of your smartphone. Additionally, files come adorned with metadata – a prime example being pictures with EXIF information containing details like GPS coordinates, device model, and precise capture time. While this may not directly unveil your identity, it could disclose your exact whereabouts at a specific moment, potentially piecing together a larger puzzle.
+
+Depths of the Deep Web and Dark Web, OPSEC Onion 5
+
+Here’s the reality check you’re not as special as you might think. Advanced techniques require considerable resources, skills, joint effort, and time, unless your goal is to overthrow the government. For most scenarios, investigations and espionage require reconnaissance and intelligence coordination, which, in itself, is time-consuming. However, once you find yourself on some list, it’s too late for OPSEC.
+
+Conclusion
+I won’t sugarcoat it achieving perfect OPSEC is an illusion. Compromises are inevitable. The key is in your dedication and the measures you’re willing to take. The more time invested and the more cautious you are, the better. Remember the basics: avoid attracting attention, stay vigilant, be patient, steer clear of laziness and ignorance, blend in, do what makes sense, and, most importantly, Shut the F* up. What Is Security Culture? | The Anarchist Library 16
+
+I’ve touched on the shenanigans in play. While not an exhaustive dive into every facet of attacks or vulnerabilities, consider this a 101 to kickstart your research. It’s designed to stake a claim in the recesses of your damn mind, offering a glimpse into how an OPSEC strategy should take shape against the backdrop of tools and adversary capabilities. and no matter what research you conduct or guide/tips you come across might not cut it; they could be downright irrelevant to your unique operations. So, how do you make this realistically work? Simple. Build your own OPSEC and execute drills that fit your OP. It shouldn’t consume more than a few hours in most cases. Stay sharp, stay secure.
+
+References
+Operations Security INTELLIGENCE THREAT HANDBOOK 20
+Автостопом по анонимности в Интернете 5
+DHS/USCG Operations Security (OPSEC) Program 5
+Interagency OPSEC Support Staff (IOSS) Terrorism Threat Handbook 2
+Vault 7: Development Tradecraft DOs and DON’Ts 12
+Plausible Deniability is Theoretically Useless 5
