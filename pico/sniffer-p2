@@ -1,0 +1,139 @@
+In Part I 20 we learnt how to write a very basic sniffer If you take a look to the code you will notice that, once we capture the packet, we have to do quite some checks in order to get to the data we are interested on.
+
+That is fine for a general packet capture tool like wireshark, were you want to see everything. However, if you a writing your own sniffer is likely because it is part of a specific tool 5. In those cases, all that packet parsing is a bit cumbersome.
+
+BPF Filters
+BPF stands for Berkeley Packet Filter ( https://en.wikipedia.org/wiki/Berkeley_Packet_Filter 1) and they will allow us to specify which kind of packets our sniffer will capture. The low level details are a bit more complex than what I have just said, but, for our current discussion, going deeper will not add much.
+
+So, these filters will allow us to specify, with high detail, the characteristics of the packets we will be capturing. This has two main benefits when we compare it with our original implementation:
+
+Our code becomes a lot more simple as we will not have to do all those checks (not all of them)
+These filters are processed in the kernel (if your operating system support them). This means that they are gonna be faster and more efficient that any code we could write. This also have an impact on the I/O performance as less data has to be transfer from kernel space to user space.
+If you are proficient with tcpdump you probably already know the syntax. Otherwise, you can take a look to man 7 pcap-filter.
+
+Let’s see how we can use them.
+
+Capturing Just What We Need
+As usual we are going to show the code and then go through it to introduce the relevant APIs. Let’s start with the main function:
+
+int
+main (int argc, char *argv[])
+{
+  char               err[PCAP_ERRBUF_SIZE];
+  pcap_t*            h;
+  struct bpf_program fp;
+  bpf_u_int32        maskp;
+  bpf_u_int32        netp;
+  char *             filter = "tcp[tcpflags] & (tcp-syn) != 0 and "
+    "tcp[tcpflags] & (tcp-ack) == 0";
+
+  if (argc != 2)
+    {
+      fprintf (stderr, "Usage: %s interface \n", argv[0]);
+      exit (1);
+    }
+  
+  if ((pcap_lookupnet (argv[1], &netp, &maskp, err)) < 0)
+    {
+      fprintf (stderr, "pcap:%s\n", err);
+      exit (1);
+    }
+  if ((h = pcap_open_live (argv[1], BUFSIZ, 0, 0, err)) == NULL)
+    {
+      fprintf (stderr, "pcap:%s\n", err);
+      exit (1);
+
+    }
+
+  pcap_compile (h, &fp, filter, 0, netp);
+  pcap_setfilter (h, &fp);
+  pcap_loop (h, -1, ip_cb, NULL);
+
+  return 0;
+}
+Well, it is a bit longer than the previous one, but do not panic, it is not much complex.
+
+The first thing you will notice is the filter program stored in a variable named filter. Yes, that’s an original name, I know:
+
+tcp[tcpflags] & (tcp-syn) != 0 and tcp[tcpflags] & (tcp-ack) == 0
+Can you say what this filter does?
+
+Sure, it will try to match packet with a TCP header with the SYN flag set and the ACK flag not set. Eureka!. It is a packet to start a connection!
+
+The next function we find is pcap_lookupnet. This function allows us to get information about the network interface we are going to sniff. As we did in Part I, we are passing the interface we want to use as a command-line parameter (argv[1]). The function pcap_lookupnet will give us the network address and the network mask for that device. As you will notice in a sec, we need the network address in order to compile our filter.
+
+Then we can open our interface for capturing packets as usual and we are ready to set our filter up.
+
+In order to be able to use our filter, the first thing we have to do is to compile it. The pcap_compile function will get our string and will convert it into a bpf_program object that we can associate to our current capture session using the pcap_setfilter. Yes just that, from this point on, we will only get the packets that match the filter from our packet capture session.
+
+Now you can start your main loop using pcap_next (as we did in Part I), or you can use pcap_loop.
+
+Setting Up a Callback
+The pcap_loop function is roughly (not exactly but almost the same thing) that the while loop we wrote in Part I to capture our packets using pcap_next. It does all the work, and whenever a packet is available will call the function we pass as third parameter. In our case ip_cb. The fourth parameter will let us pass some user data to the callback if needed.
+
+Now, the only missing part is our callback function. Here it is:
+
+void 
+ip_cb (u_char *args, const struct pcap_pkthdr* pkthdr, const u_char *p)
+{
+  struct ip     *ip_pkt;
+  struct tcphdr *tcp_pkt;
+  int            port;
+
+  /* Check your link headers here */
+  ip_pkt =  (struct ip*) (p + sizeof (struct ether_header));
+  tcp_pkt = (struct tcphdr*) (p + sizeof (struct ether_header) + 
+			     sizeof(struct ip));
+
+
+  printf ("+ SYNC From : %s:%d", inet_ntoa(ip_pkt->ip_src), ntohs(tcp_pkt->source));
+  printf ("  -> %s:%d\n",inet_ntoa(ip_pkt->ip_dst), ntohs(tcp_pkt->dest));
+
+  return;
+}
+The callback takes three parameters:
+
+args. This is the pointer to the data we pass to pcap_loop if any (the last parameter, do you remember?). For us it is just NULL.
+pkthdr. Contains information about the capture packet, a timestamp and the size of the captured packet
+p. This is our packet.
+As we had setup a filter, we know that our callback will be called with a TCP packet, so we do not have to check if there is an IP header or a TCP header. They will just be there. So we just access the data we are interested on and we are done.
+
+In this case, our filter was set up to match SYN packets so we will just show the source and destination IP addresses and ports. Depending on your application you may want to do something more sophisticated.
+
+What about coding your own drifnet tool and going into the fun of parsing application layer protocols?
+
+The Missing Piece
+OK, I had intentionally overlooked a small detail in the callback function above. Did you spotted it?. Yes, sure you did. We were assuming that our packet has an ethernet link header… which may or may not be the case.
+
+To figure out which header you should expect in your callback, you have to check the datalink format, and we do this with the function pcap_datalink. This function will tell us which kind of link we are using and therefore, which kind of link header we should expect in our packet data.
+
+A detailed list of link layers can be found in this link:
+
+http://www.tcpdump.org/linktypes.html 5
+
+If you check the code of some of those hacking tools out there, some of those that sniffs traffic, you will often find a function returning the size of the link layer header. We always need that to properly decode our packet and jump into the IP header and beyond.
+
+Now we have a use for that user parameter. Do you remember it?. The last parameter in our call to pcap_loop. We can use it to let our callback function know the size of the link layer header.
+
+I will not include the code for this, so you can have fun coding it by yourself but, in a nutshell, you may check the link-layer using pcap_datalink, calculate the size of the link-layer header, and then pass that value as parameter to pcap_loop. Finally, in your callback, instead of adding the size of the ethernet header, you just can add the value of arg, or in other words, the size of the link layer you had calculated before.
+
+Wifi Sniffers
+So, we have seen how to write simple sniffers but you may be wondering how those wifi hacking tools work. I will not provide code for this either, but it surely deserves a couple of words.
+
+To understand how this work, we have to look into the different states of a wifi network interface:
+
+Connected to an Access Point. When we are connected to an access point (that’s the normal case when we use internet from a wireless device), we had already entered the password for the access point and we are also successfully associated and authenticated for that access point. In this case, the wifi interface behaves as a normal wired interface. Actually pcap returns a ether header for those packets. This is why, if you try our code on wlan0 it will work. ( https://wiki.wireshark.org/CaptureSetup/WLAN 1)
+
+Monitor mode. This is that special mode that some network card support and that is so interesting from a security point of view. In monitor mode, we are not associated to an Access Point and the network card just returns all packets it sees. As we are not associated neither authenticated with an AP, we cannot decode the content of the packets, but we can look at the link layer header which, in this case it will be 802.11, instead of the 802.3 (ethernet) we had seen before. Take a look to man pcap_set_rfmon.
+
+For a more detailed description of those mode check the main pcap man page man pcap. You know RTFM!!!
+
+The 802.11 packets are quite more complex than the ethernet one, and they have multiple parts that changes depending on the type of packet. When working at this level, we can see the packets sent while connecting to a wifi network… basically this is what aircrack does.
+
+If you have a network card supporting monitor mode just activate it and fire wireshark on it to get an idea of the kind of information is in those packets. Then try to write your own sniffer to decode some of the packets you have just seen… for instance deauthentication packets that may be a symptom of a wifi password cracking attack…
+
+Conclusions
+In this two parts series we have explored how to write a sniffer using libpcap. I encourage to check the code of the freely available tools out there and try to understand how they work. At least the packet capturing part should be easy to follow now. I hope.
+
+We had also briefly looked into the link layer to better understand how some of the wifi hacking tools work. It is true we have not gone into much detail here, but that is because, that part would require a couple of articles on their own…
+
