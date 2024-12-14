@@ -1,0 +1,74 @@
+The Greedy Brothers Corp. has approached you, young wannabe, to solve a pretty nasty issue. Many machines have been infected by a mysterious ransomware. The IT department from the Greedy Brothers Corp. have found a dropper in some of the machines but no track of the actual malware… except, of course, the ransom notes all over the place.
+
+The company has paid to release one of the machines and captured all the network traffic during the process in the hope to get some further information on this attack. The IT guys did they best to clean up the traffic from the other infected machines around. They have also changed all IP addresses in the dump for privacy reasons… at least that is what they said…
+
+However, the technical guys at GBC believe that the ransomware actually does some more nasty things.
+
+Your task is to get a sample of the malware and analyse it to figure out how to take it over… What would you do whenever you get control of the malware?.. :astonished:
+
+Hints
+This is not intended to be an easy challenge but I’m pretty bad assigning levels… so I may be wrong and it could be a very easy one. For that reason, I will not provide any hint. You can ask for hints whenever you feel you got stuck. I will publish them on the comments using the spoiler tag.
+
+Fine some hints then:
+
+Hint 1. You can extract the TCP streams using wireshark Follow TCP stream function
+Hint 2. The malware sample is encoded in the first stream. It is a XOR encoded ELF binary… those ELF headers may help
+Hint 3. You will have to reverse the dropper to extract the payloads that contains the other flags. The key is calculated with some data from the server and some data from the client
+
+Hope this may help
+
+Rules
+This challenge has multiple flags. Get’m all!!!
+
+Post the flags on the comments using the spoiler tag.
+
+Notes
+This challenge does not contain any malware. There is no risk of getting your files crypted or to cause any other harm to your computer. All malware functions are simulated and completely harmless… they just print the flags to the console. However it contains network code. To avoid any unintentional damage please, in case you want to run the program use a controlled environment.
+
+Also note that this is the first time I try something like this so I hope it all works fine (haven’t spend as much time as I would like on it). I haven’t had a chance to test it on different OS configuration so, please, let me know if you are experiencing any issue.
+
+Finally, note that I haven’t solve it myself :scream: … I think it is doable tho. :sweat_smile:
+
+Your Case files
+Grab your case input files with
+
+cat text_below | base64 -d | tar xz
+and get started!..
+
+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
