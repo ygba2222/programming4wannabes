@@ -1,0 +1,359 @@
+I promise to write this many months ago, and finally I found some time to do it. Even when a VPN is not really a hacker tool, it is commonly used to make tracing more difficult and to increase privacy and anonymity. We have talked a lot about VPNs from a user point of view but not much about how they really work.
+
+VPNs and proxy servers are many times mentioned together because both of them can be used for similar purposes. Some people get confused at the beginning about the difference. If that is your case, then, please first read this other post, before continuing.
+
+Welcome to this new series intended to explain the guts of all those hacker’s tools out there you use or want to use… Basically, we are going to explain you how does they work and how do you can build your own… Keep reading if you do not want to be a Skid ;). We will start the series with Proxychains. Before, keeping on reading, make sure you had read the 0x00sec introduction from @OilSlick to () ProxyChains. To understand how ProxyChains works we first need to understand how does a proxy work…
+Hope that, after reading these two post you will get a better idea of the difference between this two tools, how they roughly work and what can and cannot be done with each one.
+
+What’s a VPN?
+You probably already know what a VPN is, but in case somebody does not know and, for the sake of completeness of this post, let’s introduce the concept.
+
+VPN stands for Virtual Private Network. Conceptually it is a virtual net that you deploy above a real network. Physically it uses some real network (usually the Internet), but logically, it is presented to your computer like a local network. All computers connected to the same VPN behaves like if they were all connected to a private network… in other words is like taking all those computers and connecting them to a switch all together… but that connection to that switch is actually going through a different physical network. This is the V in VPN means.
+
+The P on the VPN acronym, specially when you use a public physical network to set up your link, comes from the encryption of the link, as well as, for the fact that all the connected machines seems to be in a private local network. That way, even when anybody in between your computer and your VPN server could capture the data (it is being transfer through a public network), such a data will be encrypted and therefore protected.
+
+This is the general concept, and this idea can be implemented in many different ways. For you reading this post, a VPN is something that allows you to protect your privacy hiding your IP to the services you access in the Internet and also hiding your traffic to everybody else in your local network… including your ISP administrators.
+
+In this configuration, your VPN is just composed of two nodes. In one end is your computer, and in the other end is your VPN server, the one you are paying for the service. The VPN server will run some VPN SW, for instance, OpenVPN, and your computer will run some client SW in order to connect to that specific VPN server. The VPN server is at the same time configured as a gateway. It gets the encrypted data you send to it, it decrypts it, and send it to the Internet to let you reach your destination. Whenever a response for your computer is received, the server does the reverse operation. It encrypts the data and send it back to you.
+
+The other common configuration is the access to corporate networks. The VPN logically connected your computer to a private network somewhere else and everything looks like if your computer were physically connected to that remote network.
+
+In any case, the technology behind is the same. Using one or another configuration is a matter of setting up the different machines in a way or another.
+
+So, what is the difference between a proxy and a VPN?
+Good question, the difference is basically the access you get. A proxy is usually a program that accepts connections in some specific ports and forwards that connections to some other machine you want. Using a proxy you can only transmit data once you get a connection to the proxy and that can only be done at specific ports. That is why you cannot run a stealth port scan through a proxy.
+
+But the VPN works different. Usually it makes use of a tunnel, or more specifically, it makes use of a virtual network device. A virtual network device is, roughly, a network card that only exists in the kernel, it does not exists physically. Other than that, it behaves as a normal network interface and therefore you can transmit through it any kind of packets you want.
+
+There are different options to do this, but maybe the more common are the PPP (Point-to-Point protocol) and the tun/tap.
+
+PPP was the protocol used many years ago when people got connected to the Internet using analog modems. The same protocol was reused later on to enable VPN technologies like PPTP (popular in the Windows world) or L2TP.
+tun/tap devices are more recent and are the option selected by SW like OpenVPN. We will dig further in these ones to learn more about how those VPNs work.
+tun/tap devices
+If your kernel was compiled with support for them you should have them available, and nowadays that is the case for most GNU/Linux distributions. These devices are pretty cool. Once created, they allow to connect a user space application to the virtual network interface they represent. Let’s elaborate this a bit.
+
+Once you create one of these interfaces (we will come to that in a sec), you get a new network interface that you can manipulate with ifconfig or ip. You can assign it and IP, a netmask, you can route it… But the cool thing is that, if you write a program that opens the file /dev/tunX or /dev/tapX, that program will read/write everything that is sent through the tun or tap network interfaces.
+
+I think some of you have already got the idea. The VPN SW is just an application that read data from one of those devices, encrypts it and sends it to the VPN server using a normal socket. And in the server side you do the reverse again. Decrypt the data, and write it to the /dev/tunX or /dev/tapX device and that data will be automatically available in the tunX or tapX interface. Then you just need a route rule to send that traffic to the Internet. That part is right now out of scope and it is up to the VPN provider to decide how to make your data get to the Internet and back to you.
+
+OK fine!.. but what is the difference between tun and tap?. Again a very good question.
+
+A tun interface provides a layer 3 entry point to the net. In other words, the tun interface will expect IP packets
+A tap interface provides a layer 2 entry point to the net. In other words, the tap interface will expect ethernet frames
+Depending on your application you may want to select one or another. But to roughly get the idea of what is the difference… when your VPN runs on a tap interface you can send ARP packets on your virtual network (layer 2), but you cannot do that on a tun interface… just you cannot add the ethernet header to your packet… the kernel will not understand what you are sending and will just drop it.
+
+Coding
+OK, it is time to get into the code. I will, again, reuse the code from the Remote Shell series. Specifically the code from the Part II (Remote Shells. Part II. Crypt your link 6). You can get the code from my github repo
+
+github.com
+0x00pf/0x00sec_code/blob/master/remote_shell/rss.c 52
+/*
+  Remote Shells
+  Copyright (c) 2016 picoFlamingo
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <http://www.gnu.org/licenses/>.
+*/
+
+/*************************************************************
+  Read the post at 0x00sec.org
+This file has been truncated. show original
+We will indeed remove all the code related to the remote shell (well you may keep it if you want) and do some little modifications here and there to get our VPN working.
+
+Just to be clear. We’re only covering the coding part. In other words, we will learn how to setup a tunnel and send and receive data through it. To make this into a VPN you may need to tweak the routing tables on both ends of the tunnel to get into the internet. That is left as an exercise for the reader :slight_smile:
+
+Finally I will also mention the following resource I consulted during the preparation of this paper and that I strongly recommend to read:
+
+http://backreference.org/2010/03/26/tuntap-interface-tutorial/ 1
+
+Creating the device
+The first thing to do is to create the tun/tap device. For that we will write a function that will return a file descriptor to the user space end of the virtual device. I took the code from the kernel documentation. Get the kernel sources and look into Documentation/networking/tuntap.txt. This is the function and the additional headers required by the new functions.
+
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <sys/ioctl.h>
+
+#include <linux/if.h>
+#include <linux/if_tun.h>
+
+/* From Kernel Documentation/networking/tuntap.txt*/
+#define BUF_SIZE 1800   // Default MTU is 1500
+
+int
+tun_alloc (char *dev)
+{
+  struct ifreq ifr;
+  int fd, err;
+  
+  if( (fd = open("/dev/net/tun", O_RDWR)) < 0 )
+    {
+      perror ("open(tun):");
+      return -1;
+    }
+  
+  memset(&ifr, 0, sizeof(ifr));
+  
+  /* Flags: IFF_TUN   - TUN device (no Ethernet headers) 
+   *        IFF_TAP   - TAP device  
+   *
+   *        IFF_NO_PI - Do not provide packet information  
+   */ 
+  ifr.ifr_flags = IFF_TUN; 
+  if( *dev )
+    strncpy(ifr.ifr_name, dev, IFNAMSIZ);
+  
+  if( (err = ioctl(fd, TUNSETIFF, (void *) &ifr)) < 0 ){
+    close(fd);
+    return err;
+  }
+  strcpy(dev, ifr.ifr_name);
+  return fd;
+}
+
+The creation of a virtual tun/tap interface is straightforward:
+
+Open the cloning device /dev/net/tun
+Chose a name for your device (usually tunX, where X is an integer)
+Use the TUNSETIFF ioctrl to configure the interface. This call will configure the name and also the type of virtual network interface we want tun or tap. Just check the comment in the code.
+Sending and receiving data
+For an application as simple as the one we are going to write, you may just send the data as you get it, but, in the general case, you may want to do something with the data. Normally you will encrypt it and also compress it.
+
+For properly do that, we may need to add some metadata to the packets sent through the tunnel. We will have to add our own header to the packets in order to be able to reconstruct the data in the other end.
+
+In this example we will use the simplest header ever. Out header is just a 16bits number indicating the size of the packet sent. You can easily add additional information with small modifications to the functions below.
+
+So, we will write two helper functions to build our packet with this new format. The new format will contain, at the very beginning, the size of the real packet that follows next in the data stream:
+
+First the write function.
+
+int 
+write_pkt (int fd, char *buf, uint16_t len)
+{
+  uint16_t n;
+  // Write Packet size
+  n = htons (len);
+  if ((write (fd, &n, sizeof(n))) < 0)
+    {
+      perror ("write_pkt(size):");
+      exit (1);
+    }
+  if ((write (fd, buf, len)) < 0)
+    {
+      perror ("write_pkt(size):");
+      exit (1);
+    }
+  return 0;
+}
+This one is very easy. We first convert the size of the packet to network format (in order to deal with endianess) with a call to htons and then we send the packet size followed by the packet itself. Easy.
+
+The read function will look like this:
+
+int
+read_pkt (int fd, char *buf)
+{
+  uint16_t      len;
+  int           n, pending;
+
+  // Read Pkt size
+  if ((read (fd, &len, sizeof (len))) < 0)
+    {
+      perror ("read_pkt(size):");
+      exit (1);
+    }
+  len = ntohs (len);
+  pending = len;
+  while (pending > 0)
+    {
+      if ((n = read (fd, buf, pending)) < 0)
+	{
+	  perror ("read_pkt(data):");
+	  return 0;
+	}
+      pending -=  n;
+      buf += n;
+    }
+  return len;
+}
+If you had take a look to the resource I mentioned above you will be the similarities with the approach followed in that post.
+
+For the read process we want to read a complete packet when we call the function. The read system call may return less data that the amount requested in the third parameter, so we just need to run a loop to get all the data we want before giving back the control.
+
+In a real application this is not the best approach as we are blocking our application until all data is read. For this tutorial that is good enough and it allows us to keep the code easy to understand and short.
+
+You can see the use of the ntohs function to convert back the packet size (that is a Short -16bits- number) from Network format to Host format.
+
+Our new main loop
+Now we can re-write our main loop to actually make the data flow between the virtual network interface and the user space application. Let’s look at the code at once first:
+
+void
+async_read (int s, int s1)
+{
+  fd_set         rfds;
+  struct timeval tv;
+  int            max = s > s1 ? s : s1;
+  int            len, r;
+  char           buffer[BUF_SIZE];
+  
+  max++;
+  while (1)
+    {
+      FD_ZERO(&rfds);
+      FD_SET(s,&rfds);
+      FD_SET(s1,&rfds);
+
+      /* Time out. */
+      tv.tv_sec = 1;
+      tv.tv_usec = 0;
+
+      if ((r = select (max, &rfds, NULL, NULL, &tv)) < 0)
+	{
+	  perror ("select:");
+	  exit (EXIT_FAILURE);
+	}
+      else if (r > 0) /* If there is data to process */
+	{
+	  if (FD_ISSET(s, &rfds))
+	    {
+	      len = read_pkt (s, buffer);
+	      if ((write (s1, buffer, len)) < 0) 
+		{
+		  perror ("write(net):");
+		  exit (1);
+		}
+	    }
+	  if (FD_ISSET(s1, &rfds))
+	    {
+	      if ((len = read (s1, buffer, BUF_SIZE)) < 0) 
+		{
+		  perror ("read(tun):");
+		  exit (1);
+		}
+	      if ((write_pkt (s, buffer, len)) < 0) exit (1);
+	    }
+	}
+    }
+}
+As you can see this is a pretty standard select call. As we will see in a sec, the first parameter is the file descriptor of the socket connecting both ends of our tunnel, and the second parameter is the file descriptor to the /dev/tunX file we will use to received the data sent through the virtual network interface.
+
+So, when we get data from the network interface we do:
+
+	  if (FD_ISSET(s, &rfds))
+	    {
+	      len = read_pkt (s, buffer);
+	      if ((write (s1, buffer, len)) < 0) 
+		{
+		  perror ("write(net):");
+		  exit (1);
+		}
+	    }
+In other words. We read a packet from the network (processing our minimal header as described above) and then we send the data to the /dev/tunX device. Doing that, any application using the virttual network interface will receive that data. Note that we are actually removing our header (the packet size) of the data before writing it to the tun device.
+
+Similarly, when we receive data from the /dev/tunX, meaning that some program have sent data through the tunX virtual network interface, we will read that data end send it through the real network connection to the other end of the tunnel, after pre-pending (the write_pkt function will do that for us) our header.
+
+	  if (FD_ISSET(s1, &rfds))
+	    {
+	      if ((len = read (s1, buffer, BUF_SIZE)) < 0) 
+		{
+		  perror ("read(tun):");
+		  exit (1);
+		}
+	      if ((write_pkt (s, buffer, len)) < 0) exit (1);
+	    }
+	}
+The main function
+Now that we have all the pieces ready, we just need to write a main function to use them. If you had followed the Remote Shells series, this will look very familiar to you. Otherwise, do not panic, we will explain it anyway.
+
+int
+main (int argc, char *argv[])
+{
+  int  fd;
+
+  /* FIXME: Check command-line arguments */
+  if (argv[1][0] == 'c')
+    {
+      if ((fd = tun_alloc (argv[2])) < 0) exit (1);
+      async_read (client_init (argv[3], atoi(argv[4])), fd);
+    }
+  else if (argv[1][0] == 's')
+    {
+      if ((fd = tun_alloc (argv[2])) < 0) exit (1);
+      async_read (server_init (atoi(argv[3])), fd);
+    }
+		  
+  return 0;
+}
+The first thing you need to know is that, the same application can act as client or server. If the first parameter passed to the program is a c the program will behave as a client. If it is a s, it will behave as a server.
+
+You can see the two code blocks for each case. Both blocks are conceptually the same. First we create our virtual network interface executing the tun_alloc function passing as parameter the second command-line parameter (the name we want to use for the device).
+
+Then we call our select loop with the file descriptor of the virtual device and a socket. In one case the socket is a client socket (we call connect… see the full source code to find that call) or a server socket (we call bind, listen, accept). And that is really it regarding the SW. Let’s see how to use the program
+
+Testing it
+Let’s compile the program. Either use the Makefile from the github repository or just type:
+
+$ make vpn
+Now, we have to start both, client and server. You can run both in the same machine if you do not have a second network accessible computer. However having both, client and server in the same machine makes testing more tricky as a ping will always work because both virtual interface are always accessible from the machine.
+
+Let’s start launching the server.
+
+$ sudo ./vpn s tun1 5000
+This will create a virtual network device named tun1 and will wait for network connections on port 5000. Yes, you have to run it as root in order to create the virtual device. The program creates the virtual device but does not configure it. Let’s take a look.
+
+$ ifconfig tun1
+tun1      Link encap:UNSPEC  HWaddr 00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00
+          POINTOPOINT NOARP MULTICAST  MTU:1500  Metric:1
+          RX packets:0 errors:0 dropped:0 overruns:0 frame:0
+          TX packets:0 errors:0 dropped:0 overruns:0 carrier:0
+          collisions:0 txqueuelen:500
+          RX bytes:0 (0.0 B)  TX bytes:0 (0.0 B)
+Want to make the program configure the interface?.. strace ifconfig to figure out what to do.
+
+As you can see there is no IP associated. Let’s give it one. Use a completely different one to actually check that the tunnel is working. If your normal network is one of those 192.168.... set your tunnel IPs to one of those 10.8..... Something like this:
+
+$ sudo ifconfig tun1 10.8,0.1 netmask 255.255.255.0
+Now, let’s launch the client. If you are using two different machines you can pass the same network device (tun1 in our example). When running both in the same machine you have to use a different name:
+
+$ sudo ./vpn c tun2 IP 5000
+$ sudo ifconfig tun2 10.8.0.2 netmask 255.255.255.0
+where IP is the IP of the machine running the server, or 127.0.0.1 if you are running both on the same machine.
+
+So now you can try to ping the tunnel
+
+$ ping 10.8.0.1
+When doing that, you are running all those ECHO packets throughout our vpn program and you can reach the other end of the tunnel using the assigned IP addresses.
+
+Some final comments
+This is it for the coding of a tunnel… the core element of a VPN. There are a couple of things we have to say.
+
+Usually, when using an VPN you have to adjust the MTU value of your interface. The MTU is the Maximum Transfer Unit and for an Ethernet network it is set, by default, to 1500. This means that the packet you send through your wire will be 1500 bytes maximum.
+
+Now, think about the header we added to our VPN channel. We were just using 2 bytes for the size of the packets… but that means that our effective MTU is actually reduced to 1498 instead of 1500. For normal VPN SW like OpenVPN the headers are bigger and usually the MTU in the virtual interface is set to 1300. That basically means that we can have a header as big as 200 bytes.
+
+The second things to comment about is the VPN server logging capabilities. You may have an idea by know of what a VPN server can log… basically all your traffic. Absolutely all. The first thing they know is your IP, your client server has to “connect” (you will usually use UDP, but your IP will be logged anyway) to the VPN server and there you go your IP.
+
+Then, every single packet you send will pass through the server. You can think about it as a sniffer without RAW sockets. It just get all the packets. Actually it also see all the traffic that is sent to you and can even modify it at will. The VPN server is effectively a Man-In-The-Middle and any MITM attack can trivially be implemented there.
+
+Conclusions
+So, this is the very gory details of how a VPN like OpenVPN works. OpenVPN does a lot more things. Let’s say that, what we have seen is the core technology it uses. On top of that you have to add a lot more things to get a product, but we haven’t just learn how to create a VPN, we have learned the basics of how to create tunnels.
+
+So, for those of you always looking for projects to sharp your C coding skills. These are some things you can try from this point on.
+
+Use UDP or even better ICMP as a transport for your tunnel data. UDP is straight forward. For ICMP you can take a look to this: Remote Shells Part IV. The Invisible Remote Shell 6
+
+Add proper encryption. Grab a nice crypt library and crypt your data (what about nettle?). This paper my help a bit: Remote Shells. Part II. Crypt your link 6
+
+Compress your stream and get more bandwidth. This way you can fit more data in your tunnel. If your server has more bandwidth than you (and allows you to use it), you are, effectively, increasing your bandwidth :open_mouth:
+
+Tunnels can actually be used for more things… Share your ideas!
+
+Get the code at: https://github.com/0x00pf/0x00sec_code/tree/master/vpn
