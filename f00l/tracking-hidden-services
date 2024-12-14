@@ -1,0 +1,113 @@
+In this article, I will take you through my thought process while conducting an investigation, aiming to identify and collect sources of intelligence. Specifically, we will focus on using OSINT (Open Source Intelligence) sources related to the Deep and Dark Web domain. Our primary goal is to monitor intelligence information from the following sources: ‘markets’ and ‘cyber criminal activities.’ While I will present a case I worked on some time ago, I won’t provide details about the case itself. Instead, I will discuss the tools I used and how to conduct a hunt. As you join me on this journey, I hope you don’t get lost in my thought process.
+
+Case Study
+Your mission, should you choose to accept it, is to trace and identify the relationship between two onion sites and demonstrate that they are owned by the same entity or individual. Additionally, trace their blockchain fingerprints to a registered cryptocurrency exchange.
+
+Site A - operates as an onion market, facilitating the sale of hacking tools and personal identifying information (PII).
+Site B - appears to be a platform offering personal hacking services.
+
+A word of caution : Be cautious not to be deceived by appealing headlines you may come across while conducting a passive search on the Dark Web, This message will self-destruct in 5…4…3…
+
+Tools For Dark Web Onion Sites
+
+Tor Browser 27
+Wallet Explorer 28
+Blockchain Explorer 16
+OXT 25
+OSINT Framework 41
+Wallet Explorer is useful as it identifies all Bitcoin addresses owned by a single wallet. When dealing with cryptocurrencies, one wallet may own numerous addresses.
+
+The Blockchain Explorer is like an interactive map of the blockchain, while OXT analyzes the blockchain to extract high-level information. You browse these high-level information instead of a direct representation of the data stored in the blockchain.
+
+Fingerprints
+So, how do we link the relationship between two dark web onion sites? The Dark Web is an uncharted, chaotic conglomerate of sites. At times, .onion sites often go down for prolonged periods of time or entirely disappear.
+
+For instance, in this case, we’re trying to find a link between two different onion sites. The first step is to identify the administrators and popular vendors of such sites. Many vendors operate on various markets with the same details across all sites. Some are also active on discussion forums. Then, we delve into the site’s structure by searching for email addresses, Bitcoin addresses, and identifying technologies. We scan for open ports and hidden paths.
+
+So, let’s begin by creating an intelligence profile. Take note of the following:
+
+Username / Alias
+Date of account creation / Online, Offline (map out an activity pattern)
+PGP public key (Important! Reused keys indicate related accounts)
+Type of merchandise offered
+Methods of contact
+Also, writing style, also known as stylometry, plays a role. Certain phrases, slang terms, and colloquialisms are associated with specific geographic locations and rarely occur elsewhere. Conversely, actors can employ various writing styles or different languages to manipulate research and lead it to incorrect conclusions. One famous case is the ‘Shadow Brokers.’ Writing styles serve as characteristics that aid in fingerprinting, all while concealing true attributes. ‘Broken English’ is effectively performing its task by obstructing search algorithms.
+
+Next, conducting a quick crawl and observation of the sites, I noticed a couple of things. The site B is running on the ‘Apache web server,’ which is fairly standard. However, what gets interesting is that the site operator seems to have forgotten to disable the Apache status module 5, also known as mod_status or server-status. This module provides information about the requests Apache is currently serving and has recently served. The information includes:
+
+The time the server was last started/restarted and the duration it has been running.
+Averages, including the number of requests per second, the number of bytes served per second, and the average number of bytes per request.
+Details about the current hosts and requests being processed.
+Furthermore, there are numerous resemblances between the sites, but we require evidence to confirm that they are actually owned or operated by the same individual or organization. However, further investigation showed profiles of interest, one labeled as Admin and another as a vendor, both engaged in multiple activities like leaking sensitive data and exploiting low hanging fruit, Bunch of skiddie, Like any newcomer trying to build a reputation, they left a trail of footprints behind. So, I decided to temporarily suspend the investigation of the sites and instead focus on gathering more information about these profiles. My goal is to determine whether I can link them to any profiles or accounts on other sites.
+
+Starting with the administration of Site A, it is now time to cross-reference that intelligence profile and search for any useful information. I was able to trace the username across various forums, one of which is xss[.]is. In case you’re unfamiliar, “xss is a Russian forum that hosts discussions on vulnerabilities, exploitation, malware, and various other cyber-related topics.” To thoroughly scope the profile, I initiated a quick crawl to retrieve a link. Upon checking the link, I received no response, indicating that the site is no longer operational. Additionally, the profile associated with it has been inactive since the last recorded activity in 2021. To investigate further, I decided to run the site through WebBackMachine 12 to see if any snapshots are available:
+
+ddd
+ddd
+980×219 1.54 KB
+The site contains snapshots dating back to approximately 2018, with additional snapshots from 2019, 2020, and 2021. It’s time to conduct a manual inspection of these snapshots. As we delve into the snapshots, we discover a subdomain labeled ‘Subscription’ and ‘Services.’ Interestingly, it turns out that the site was offering hacking services before it went offline.
+
+What’s even more intriguing is that before it transformed into a hacker-for-hire service, it started as a personal blog in the 2018 snapshot. This blog featured articles on hacking, tools, and related topics. As we carefully examine all of this, we managed to collect the following information:
+
+Site A:
+
+Bitcoin Address
+A real name linked to the administration alias
+Country of residence
+Email Address
+Site B:
+
+Bitcoin Address
+Email Address
+Now that we’ve managed to collect some valuable information on the administration of Site A and we know that the Admin has an interest in hacking services, we still need evidence that links the site to it. Let’s examine the bitcoin addresses evidence.
+
+Blockchain Forensics On Transactions
+From a single Bitcoin address, various insights can be derived, including the total number of transactions, the sources and amounts of incoming funds, the destinations and amounts of outgoing funds, a historical timeline of transactions, and identification of other associated Bitcoin addresses within the same wallet. This is where the website Wallet Explorer 28 and OTX 4 become relevant and come into play.
+
+Usually, the first approach is to start looking for patterns and correlations to link multiple addresses. We also map the flow of funds and relationships between addresses to uncover suspicious activities or money laundering schemes and extract and analyze additional data associated with transactions, timestamps to gain further insights.
+
+With this tool, we are able to identify any other bitcoin addresses owned by the same wallet.
+
+When we input the address into the explorer, the displayed data includes transaction records, each with specific information like dates and the amounts sent or received. Notably, one of the transactions received funds from an unfamiliar sender (address beginning with “06f”), allowing us to discern the shared ownership of these addresses and subsequently unveil the complete wallet.
+
+With a transaction history dating back to 2019, we now have a time frame that matches our investigation. Let’s proceed to scrutinize the individual transactions associated with each of these Bitcoin addresses.
+
+These two sites are related since their bitcoin addresses come from the same wallet, confirming that the individuals behind them are the same.
+
+Tracing the payments through to an exchange
+Transaction History explores how funds have moved in and out of the address, potentially revealing patterns or connections to other addresses.
+
+Most of the transactions paid into these accounts resemble normal transactions when viewed on the blockchain. However, following the transactions, some use more addresses, possibly indicating a bitcoin mixing service. This is normal, as many actors use a mixing service, or cryptocurrency tumbler, to guarantee anonymity by essentially scrambling the addresses and the payments made.
+
+wlt
+wlt
+830×291 14.1 KB
+Likely, the bitcoin address is of an exchange, or it may be a well-used bitcoin tumbling service, explaining the large volume of bitcoin addresses it holds in its wallet, allowing it to essentially scramble transactions.
+
+Here, we have successfully conducted research to establish the relationship between the two sites, confirming that they are indeed owned by the same person. Additionally, we have tracked down the market administration. However, it’s important to note that using open-source information on the dark web and the blockchain can only take you so far.
+
+De-anonymization
+Remember that vendor I mentioned earlier, who also piqued our interest? Well, it turns out that this vendor was promoting malware. According to the announcement, the malware has multiple features, one of them being ransomware. The vendor was offering a beta version for testing before purchase. So, I decided, why not? I’m something of a malware enthusiast myself. During the analysis, I found a web address for a TOR hidden service, which appears to be provided to the victim to pay for the decryption key. Next, let’s de-anonymize and identify the hosts of these infrastructure.
+
+In de-anonymizing the dark web infrastructure, we can enable hosting providers to reduce illegal activity on their networks and enhance tracking, potentially leading to shutting down these operations. This is often performed with ransomware operations. So, how does it work?
+
+The sites are accessible only on The Onion Router (TOR) network. One approach involves identifying self-signed TLS certificates and specific icons, known as favicons, associated with the site.
+
+Tools
+Shodan 11
+Nslookup 12
+Censys 8
+TLS certificate matching
+An SSL/TLS certificate contains identifying information, such as a unique serial number and cryptographic key information, which is traceable if reused on other web properties. A key principle of operating on the dark web is to maintain anonymity, so certificates providing identity attestation can actually help pinpoint the operator behind a website.
+
+Web crawlers, such as Shodan, provide a powerful method for indexing the public internet. They provide a myriad of information about host computers that are running internet-enabled services. One of the services Shodan provides is cataloging TLS certificate information. By leveraging Shodan’s index, A simple whois check shows that this host belongs to M247 LTD Singapore. When visiting the site, we face a blank screen; however, we can verify that the TLS certificate serial number is the same as that used for the site hosted on TOR hidden services, which we can attribute to a specific hosting provider. Four domains have been listed as A records in Domain Name System (DNS) records with the IP address since 2021.
+
+These domains were registered using a privacy domain registration proxy service by the malware operator. However, tracing the favicon file in the web root directory as ‘favicon.ico,’ we can obtain this file and calculate a hash value for it. Unfortunately, Shodan doesn’t keep an index of these favicon file hashes.
+
+So I moved on and decided to follow the TOR hidden service link we found earlier. I noticed that the link contains an identifier that is presumably unique to each victim, something like this:
+
+https://{url}/id=aaaaa
+Enum the URL Endpoints, we see that the link contains several HTTP parameters. So, I thought, directory traversal? And just like that, bingo. I’ll leave the rest for you to guess.
+
+In conclusion, I hope you’ve picked up a few tricks from this little spiel. This post was meant to give you a sneak peek into how a hunt goes down and to drop some knowledge on the OSINT tools we like to play with. But, you know, life in the digital shadows ain’t always this straightforward. It’s all about patiently waiting for the other guys to slip up, or sometimes, they just hand us the info on a silver platter. It’s mind-boggling how many vendors out there keep making the same boneheaded OPSEC blunders, I tried to keep it vague, of course, can’t spill the beans on the real deal. Gotta keep those cases cookin’ in the shadows.
+
