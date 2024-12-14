@@ -1,0 +1,117 @@
+S’goin’ on guys, dtm here with a write-up on Windows keylogging.
+
+As a promotional gift, I will be detailing a type of keylogger on the code level written in MSVC++ utilising the WinAPI.
+
+Disclaimer: The following document is not newbie-friendly and requires a fair amount of knowledge of both general programming concepts and Windows internals:
+
+Proficiency in C/C++
+Knowledge of the WinAPI and its documentation
+Knowledge of Windows messages and message queues
+Knowledge of Windows hooks
+Some understanding of multi-threading
+Recommended knowledge of Mutual Exclusions
+Recommended knowledge of FTP
+General Overview of Keyloggers
+A keylogger is an object which, in its simplest state, tracks key presses registered by the keyboard. Note that this object can be hardware as well as software but this article will focus more on the latter. When a key is pressed, the keylogger is able to capture it and then pass it along to its original destination. Keyloggers are not always considered malware since it is dependant on the situation in which it is used. Consider the following: If a parent is concerned about their child’s activity on the computer, they can easily monitor them through their keyboard input; or in a company, the employer wishes to monitor the activity of his employees to make sure that they aren’t doing what they aren’t supposed to do. in fact, this probably goes for all “malware”. Such applications may be referred to as Possibly Unwanted Programs (PUP) or Possibly Unwanted Applications (PUA).
+
+In a standard console application which takes keyboard input, for example, using the getchar function from the standard C library, the input from the keyboard gets buffered into the stdin where the program can fetch the character. A keylogger is not limited to its own active console window (if it even has one at all) so how are we able to globally capture keystrokes? The answer is pretty simple, actually, in fact, Microsoft has already done most of the heavy lifting for us.
+
+Callback Functions
+Windows applications all work in harmony using something called messages. These messages are all passed through the message queue and each application can detect and process its own messages. Within the applications are callback functions which may be called in the event of retrieving certain messages. For example, pressing ALT+F4 in a GUI window will send a WM_CLOSE message into the message queue where the corresponding application’s message loop will detect it and pass it to a WindowProc 13 callback function for processing. What happens inside this function is that the message is filtered through some switch cases and in the case of a WM_CLOSE message, it will handle any clean ups and whatever else it needs, then it will destroy the window and also possibly exit the program.
+
+LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+	switch (uMsg) {
+		case WM_CLOSE:
+			// ...
+			DestroyWindow(hwnd);
+	}
+}
+Additional message information may also be passed into the callback function under WPARAM and LPARAM arguments. Note that these arguments will not always be the same and can change under different callback functions.
+
+LowLevelKeyboardProc
+There exists a callback function called LowLevelKeyboardProc 29 and what this function does is it responds to key state changes either within a thread scope or a global scope - of course we’re wanting to have a global scope for our purposes. But before we can use this function, we first need to learn about Windows hooks.
+
+Windows Hooks
+From the MSDN documentation on Windows Hooks 24, “A hook is a mechanism by which an application can intercept events, such as messages, mouse actions, and keystrokes. A function that intercepts a particular type of event is known as a hook procedure. A hook procedure can act on each event it receives, and then modify or discard the event.” As we can see from this description, applications are able to "intercept … keystrokes" and that is exactly what we are aiming to do with a keylogger.
+
+Installing Hooks
+To install a hook procedure, we must use the SetWindowsHookEx 19 function to install a hook like so:
+
+LRESULT CALLBACK HookProc(int nCode, WPARAM wParam, LPARAM lParam) {
+	// ...
+	
+	return CallNextHookEx(NULL, nCode, wParam, lParam);
+}
+
+int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
+	// ...
+	
+	SetWindowsHookEx(idHook, (HOOKPROC)HookProc, hMod, dwThreadId);
+	
+	// this is our message loop to receive messages from the queue
+	MSG msg;
+	BOOL bRet;
+	while ((bRet = GetMessage(&msg, NULL, 0, 0)) != 0) {
+		if (bRet == -1) {
+			// handle error
+		} else {
+			TranslateMessage(&msg);
+			DispatchMessage(&msg);
+		}
+	}
+	
+	return 0;
+}
+Here, we would define a callback function HookProc and use a call to SetWindowsHookEx to install a hook so that our function can intercept and handle the hook procedure of type idHook. In the HookProc, we are highly recommended to call CallNextHookEx 7 to be able to pass the hooked information onwards to the next existing hook procedure.
+
+Let’s finally get our hands dirty by writing a prototype.
+
+Keylogger Prototyping
+Disclaimer: The following code snippets will not contain any error checking for the sake of readability.
+
+We now know what we need to set up a function to intercept keystrokes from the information provided above. It should look a little something like this:
+
+LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
+	// ...
+	
+	return CallNextHookEx(NULL, nCode, wParam, lParam);
+}
+
+int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
+	// ...
+	
+	SetWindowsHookEx(WH_KEYBOARD_LL, (HOOKPROC)LowLevelKeyboardProc, hModule, 0);
+	
+	// message loop here
+}
+For our SetWindowsHookEx, we require the idHook parameter to be WH_KEYBOARD_LL since it has a global scope. For our dwThreadId parameter, we set it to 0 since this will allow our hook procedure to be associated will all existing threads running on the same desktop as our application. As of yet, our keylogger is useless to us since we have not implemented any method to store the keystrokes.
+
+Writing Keystrokes to Disk
+First, we need to know about the arguments which are passed into the LoweLevelKeyboardProc function.
+
+According to the MSDN documentation for the LowLevelKeyboardProc function, nCode will hold the value HC_ACTION if " wParam and lParam parameters contain information about a keyboard message". So only when nCode is equal to HC_ACTION will we need to write to the file, else we do not care. Once we have such a situation, we will need to check the wParam and lParam for information about the keypress. wParam contains information about how the key was pressed such as a key down or key up. lParam is documented as a pointer to a KBDLLHOOKSTRUCT 4 which contains the respective vkCode 5 of the keypress.
+
+LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
+	if (nCode == HC_ACTION) {
+		if (wParam == WM_KEYDOWN) {
+			KBDLLHOOKSTRUCT *kbd = (KBDLLHOOKSTRUCT *)lParam;
+			DWORD vkCode = kbd->vkCode;
+			
+			if (vkCode >= 0x30 && vkCode <= 0x5A) {
+				FILE *fp = fopen(KEYLOG_FILE, "a+");
+				
+				fputc(vkCode, fp);
+				
+				fclose(fp);
+			}
+		}
+	}
+	
+	return CallNextHookEx(NULL, nCode, wParam, lParam);
+}
+We can typecase the lParam as a pointer to a KBDLLHOOKSTRUCT and assign it to a variable kbd. For this example, we only test for basic input which includes keys ranging from 0-9 and A-Z. Of course, right now there is a lot missing detail with regards to other keys such as ALT, CTRL and SHIFT and also that it cannot differentiate upper and lower case and symbols. We can easily fix this by manually adding in some tests and switch statements until it reaches our satisfaction. Once we have extracted the vkCode member from kbd and it satisfies the key range, we will open our file defined by KEYLOG_FILE with an append mode and simply add on the vkCode to the end of the file.
+
+After we’ve finished what we intended to do, we can then push the keypress onwards to the next hook procedure.
+
+Conclusion
+In the next part I will showcase my keylogger code and briefly run through its functionality and how it’s achieved. Thanks for reading and stay tuned!
