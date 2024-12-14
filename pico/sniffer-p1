@@ -1,0 +1,242 @@
+A sniffer is an application able to capture data being transmitted through some medium. In general, the term is associated with capturing network traffic and the term Eavesdroping ( Eavesdropping - Wikipedia 4) is used in the general case.
+
+In this post we are going to find out how sniffers work. Actually, what we are going to discuss is how to capture network traffic. As we will see in this series, traffic capture is actually required for some other tools. Or, if you prefer, some other tools have to capture traffic to accomplish its task.
+
+A Word on the Hardware
+Before going straight to the code, let’s briefly introduce some general topics. The first thing we have to understand is that, in order to capture traffic, we have to see it. This may sound stupid, but basically it means that you need to understand how networks work and how the traffic moves through them.
+
+A classical example of this is a computer network connected by switchs. A switch knows which computer is connected to which network connection it has, and it will just send traffic through the right physical cable. This means that, even when you can talk to any other machine in the network, you can only see the traffic that goes to/from you.
+
+Even then, the network adapter, by default, filters out any traffic not targeted to it. In other words, even if the traffic from some other computer is going through the cable we are connected to, the network hardware will just ignore those frames and they will not be captured. Think for instance in a computer network connected with a hub (a device that whatever it receives in a connection is sent back on all others) or a wifi network.
+
+In those cases, the network hardware enables (normally) a special mode known as “promiscuous mode”. When this mode is activated, anything we see, whether is send to us or not will be captured… but again, we have to be able to see it.
+
+Depending on what you want to achieve with your sniffer, you may not need to use the promiscuous mode.
+
+A Word on the Software
+So we want to capture the traffic going through our network interface. How do we do that?. The reply to that question is: RAW socket.
+
+A RAW socket is a special kind of socket connected below level 4. Remember, level 4 is the so called transport level. TCP and UDP are protocols of that level, and if you had ever write any network related code, those are the two kind of sockets you have been worked with (STREAM and DGRAM).
+
+Yes, RAW sockets allows us to get a file descriptor connected to the level 3 (network level or IP if you prefer), or level 2 (link or ethernet/wifi/… frame level). Sounds like what we need.
+
+As you can imagine, this objects are pretty low level and, as you know, as you go down, systems starts to behave in different ways. We will see how to use sockets RAW here (in a later post), but, in general, you better use a library designed to deal with different systems. This library is called libpcap and we will also briefly introduce it in this post.
+
+This is actually it, unless you are a script language coder. I will skip that part because, I feel like this post/series is going to be already very long. Additionally, most of those scripting language modules are just wrappers around libpcap. So, getting to know libpcap will automatically make you understand how to use those modules in minutes.
+
+For all the Python coders around here, the module you want to use is called scapy (actually it covers more than just packet capturing) but you can also directly use socket RAW from Python and other scripting languages.
+
+Be free to post complementary information on how to sniff data using different languages… maybe a code challenge? :wink:
+
+Right to the Code
+So, let’s start with a simple sniffer using libpcap, this is the bare minimum sniffer you can write that does something useful (without using filters). The code looks like this:
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+#include <netinet/ether.h>
+#include <netinet/ip.h>
+#include <arpa/inet.h>
+#include <pcap.h>
+
+int
+main (int argc, char *argv[])
+{
+  char                err[PCAP_ERRBUF_SIZE];
+  pcap_t              *h;
+  struct pcap_pkthdr  header;	
+  const u_char        *packet;	
+  struct ip           *ip;
+  struct ether_header *eh;
+
+  if ((h = pcap_open_live (argv[1], BUFSIZ, 0, 1000, err)) == NULL)
+    {
+      fprintf (stderr, "%s\n", err);
+      exit (1);
+    }
+  while (1)
+    {
+      int etype;
+      packet = pcap_next (h, &header);
+      usleep (0);
+
+      if (!packet) continue;
+      /* get some useful info */
+      /* Assuming Ethernet Link 802.3 */
+      eh = (struct ether_header*)packet;
+      etype = ntohs (eh->ether_type);
+
+      /* Ignore non IP packets... */
+      if (etype != ETHERTYPE_IP) continue;
+      ip = (struct ip*) (packet + sizeof(struct ether_header));
+
+      if (ip->ip_p == IPPROTO_ICMP)     printf ("[ICMP] ");
+      else if (ip->ip_p == IPPROTO_UDP) printf ("[UDP ] ");
+      else if (ip->ip_p == IPPROTO_TCP) printf ("[TCP ] ");
+
+      printf ("--> TTL: %03d PROTO: %02d | src: %s",
+	      ip->ip_ttl, ip->ip_p, inet_ntoa (ip->ip_src));
+
+      printf ("-> dst: %s\n", inet_ntoa(ip->ip_dst));
+    }
+  pcap_close (h);
+  return 0;
+}
+Before looking into the code, let’s compile and test it. I have named the file snif-01.c, and I have compiled it with:
+
+gcc -Wall -o snif-01 snif-01.c -lpcap
+The program expects as first parameter a network interface to listen to. I will use my wired interface for the tests. Remember that you need to run the application as root… do you remember those RAW sockets deep inside libpcap?.
+
+sudo ./snif-01 eth0
+Tests
+Now we can do a couple of tests. Make sure that the IP you use for testing is up… Basically, in a LAN environment, down machines will be marked up in your local ARP table and no packet will ever leave you machine. So, either use, the loopback interface, a virtual machine or something like that.
+
+Single Ping
+ping -c 1 192.168.1.1
+--
+[ICMP] --> TTL: 064 PROTO: 01 | src: 192.168.1.10-> dst: 192.168.1.1
+[ICMP] --> TTL: 064 PROTO: 01 | src: 192.168.1.1-> dst: 192.168.1.10
+We are sending a ECHO request (the first packet) to 192.168.1.1, and 192.168.1.1 is replying with an ECHO reply. Of course we are not printing that information and it is not shown in the output above… but we all know that.
+
+UDP Scanning a Closed Port.
+sudo nmap -sU 192.168.1.1 -p 123
+----
+[UDP ] --> TTL: 040 PROTO: 17 | src: 192.168.1.10-> dst: 192.168.1.1
+[ICMP] --> TTL: 064 PROTO: 01 | src: 192.168.1.1-> dst: 192.168.1.10
+We see our UDP packet leaving towards its destination, and receiving back and ICMP packet. If we change the program to show the ICMP packet, we will see the Port Unreachable message.
+
+TCP SYN Scan a Closed Port
+sudo nmap -sS 192.168.1.1 -p 121
+---
+[TCP ] --> TTL: 059 PROTO: 06 | src: 192.168.1.10-> dst: 192.168.1.1
+[TCP ] --> TTL: 064 PROTO: 06 | src: 192.168.1.1-> dst: 192.168.1.10
+Here we see our SYN packet leaving, and a RST packet coming back (because the port is closed).
+
+So, it looks like this basic sniffer is kind of working. Let’s get back to the code to figure out what it does.
+
+The Code
+if you pay attention to the code, you will actually find two function calls to the libpcap library: pcap_open_live and pcap_next.
+
+The first one does most of the work. It creates our RAW socket bound to the device we pass as first parameter, and sets up some internal data structures used by the capture object. The function returns a handler, which we will have to use to interact with the capture session we just created via pcap_open_live. The rest of the parameters are:
+
+Param 2 (snaplen). This is the maximum size of packets to capture. In general you will like to set it to BUFSIZ. This is a constant defined by libpcap for this parameter. Unless you really know what you are doing (and we are not getting to that point in this post), just use this value.
+Param 3 (promisc). Setting this parameter to 1 will enable promiscuous mode in your network card, supposing your hardware supports this mode. We have already talked about what this means.
+param 3 (timeout). This parameters sets a timeout in the packet capture function. This means that your capture function (aka pcap_next in this example), will return after this amount of time in case no packet has been captured. A value of -1 means no timeout. Usually you will notice a high CPU load if you set the timeout to -1, but also a lower latency getting your packets.
+param4 (err). This is just a string to store an error message in case something goes wrong. For instance, you do not have the permissions to create RAW sockets.
+After successfully executing pcap_open_live, you are ready to capture packets. To caught them all (packetmons :)), you can use pcap_next. This function receives as first parameter the handler to our capture session, and as second parameter a pointer to a packet header struct where the function will store some generic information about the packet. The function returns a pointer to the captured packet… that is actually thee data we are interested on.
+
+Note that libpcap provides many functions to initialize the packet capture and also to get the data from the capture session. The two functions we have commented so far are, maybe, the simplest combination to get you going.
+
+Accessing the Data
+So, now we have the packet and we want to do something with it.
+
+The first thing to do is to check if the pointer returned by pcap_next is NULL. That means that the timeout has expired or that something bad happened. In any case we will not have data to access and we have to act accordingly.
+
+Then we have to start ripping off the packet. For doing that we need a sharp knife and also to know which kind of packet we are capturing. In this case, an Ethernet packet. This means that, our packet will have multiple headers and we will have to process them one by one. The figure below shows a summary of what we will find:
+
+ETHER HEADER | Data                    -> ARP, RARP, IPX, VLAN tags,...
+ETHER HEADER | IP HEADER | Data        -> Generic IP packet (a header should follow)
+ETHER HEADER | IP HEADER | ICMP | Data -> ICMP Packet
+ETHER HEADER | IP HEADER | TCP  | Data -> TCP packet
+ETHER HEADER | IP HEADER | UDP  | Data -> UDP packet
+Let’s go through the different headers to figure out what’s the relevant information they provide us to decode each packet.
+
+The Ethernet Header
+The Ethernet header is defined in the file /usr/include/net/ethernet.h, and it looks like this:
+
+struct ether_header
+{
+  u_int8_t  ether_dhost[ETH_ALEN];	/* destination eth addr	*/
+  u_int8_t  ether_shost[ETH_ALEN];	/* source ether addr	*/
+  u_int16_t ether_type;		        /* packet type ID field	*/
+} __attribute__ ((__packed__));
+
+This is pretty simple. The two first fields are the MAC addresses of the two machines interchanging information. The third one, type, is the one that is going to tell us what come next. The possible values are also defined in the same header file, and here is the list:
+
+/* Ethernet protocol ID's */
+#define	ETHERTYPE_PUP		0x0200          /* Xerox PUP */
+#define ETHERTYPE_SPRITE	0x0500		/* Sprite */
+#define	ETHERTYPE_IP		0x0800		/* IP */
+#define	ETHERTYPE_ARP		0x0806		/* Address resolution */
+#define	ETHERTYPE_REVARP	0x8035		/* Reverse ARP */
+#define ETHERTYPE_AT		0x809B		/* AppleTalk protocol */
+#define ETHERTYPE_AARP		0x80F3		/* AppleTalk ARP */
+#define	ETHERTYPE_VLAN		0x8100		/* IEEE 802.1Q VLAN tagging */
+#define ETHERTYPE_IPX		0x8137		/* IPX */
+#define	ETHERTYPE_IPV6		0x86dd		/* IP protocol version 6 */
+#define ETHERTYPE_LOOPBACK	0x9000		/* used to test interfaces */
+You can see that there is a world besides TCP/IP. You can also see the ARP protocol everybody talks about and you can also see the IP protocol. The one we are interested on.
+
+Now, you can go back to out minimal sniffer code and check how we just skip anything that is not an IP packet. This way, we are sure that the next header in the packet is an IP header and we can keep on decoding the information.
+
+Challenge: Can you modify the sniffer to show ARP packets and, for instance, detect an ARP poisoning attack? . You can print MAC addresses with a line like this:
+
+ether_ntoa((const struct ether_addr *)eh->ether_dhost)
+
+The IP Header
+At this point, we know that our packet is an IP packet and now we can access the IP header, which is just next to the ethernet header we have just processed. So, in order to access the header, we just need to skip the ethernet header:
+
+ip = (struct ip*) (packet + sizeof(struct ether_header));
+
+The IP header structure is defined in /usr/include/netinet/ip.h and it looks like this (I have removed the endianess defines and some constants defined within the struct for easy reading):
+
+struct ip
+  {
+    unsigned int ip_hl:4;		/* header length */
+    unsigned int ip_v:4;		/* version */
+    u_int8_t ip_tos;			/* type of service */
+    u_short ip_len;			/* total length */
+    u_short ip_id;			/* identification */
+    u_short ip_off;			/* fragment offset field */
+    u_int8_t ip_ttl;			/* time to live */
+    u_int8_t ip_p;			/* protocol */
+    u_short ip_sum;			/* checksum */
+    struct in_addr ip_src, ip_dst;	/* source and dest address */
+  };
+You can see here some familiar fields like the TTL value or the source and destination IP addresses at the very end.
+
+Again, an IP packet can carry many different protocols, so we need to figure out what is coming after the IP header. The payload protocol is specified by the field ip_p (take a look to the code again) and possible values can be found at /usr/include/netinet/in.h. This is the list:
+
+    IPPROTO_IP = 0,	   /* Dummy protocol for TCP.  */
+    IPPROTO_HOPOPTS = 0,   /* IPv6 Hop-by-Hop options.  */
+    IPPROTO_ICMP = 1,	   /* Internet Control Message Protocol.  */
+    IPPROTO_IGMP = 2,	   /* Internet Group Management Protocol. */
+    IPPROTO_IPIP = 4,	   /* IPIP tunnels (older KA9Q tunnels use 94).  */
+    IPPROTO_TCP = 6,	   /* Transmission Control Protocol.  */
+    IPPROTO_EGP = 8,	   /* Exterior Gateway Protocol.  */
+    IPPROTO_PUP = 12,	   /* PUP protocol.  */
+    IPPROTO_UDP = 17,	   /* User Datagram Protocol.  */
+    IPPROTO_IDP = 22,	   /* XNS IDP protocol.  */
+    IPPROTO_TP = 29,	   /* SO Transport Protocol Class 4.  */
+    IPPROTO_DCCP = 33,	   /* Datagram Congestion Control Protocol.  */
+    IPPROTO_IPV6 = 41,     /* IPv6 header.  */
+    IPPROTO_ROUTING = 43,  /* IPv6 routing header.  */
+    IPPROTO_FRAGMENT = 44, /* IPv6 fragmentation header.  */
+    IPPROTO_RSVP = 46,	   /* Reservation Protocol.  */
+    IPPROTO_GRE = 47,	   /* General Routing Encapsulation.  */
+    IPPROTO_ESP = 50,      /* encapsulating security payload.  */
+    IPPROTO_AH = 51,       /* authentication header.  */
+    IPPROTO_ICMPV6 = 58,   /* ICMPv6.  */
+    IPPROTO_NONE = 59,     /* IPv6 no next header.  */
+    IPPROTO_DSTOPTS = 60,  /* IPv6 destination options.  */
+    IPPROTO_MTP = 92,	   /* Multicast Transport Protocol.  */
+    IPPROTO_ENCAP = 98,	   /* Encapsulation Header.  */
+    IPPROTO_PIM = 103,	   /* Protocol Independent Multicast.  */
+    IPPROTO_COMP = 108,	   /* Compression Header Protocol.  */
+    IPPROTO_SCTP = 132,	   /* Stream Control Transmission Protocol.  */
+    IPPROTO_UDPLITE = 136, /* UDP-Lite protocol.  */
+    IPPROTO_RAW = 255,	   /* Raw IP packets.  */
+There is a bunch of stuff we can accommodate inside an IP packet, isn’t it?. Now, back to our code, you can check that we are just processing ICMP, TCP and UDP.
+
+Your Turn
+This is it for this first post about sniffing. Now is your turn to apply what you have just learn (really hope you have learn something). With the information we have put in this post you should be able to:
+
+Find the header files for TCP, UDP and ICMP and associated structures
+Update the sniffer to print the source and destination port for the transport protocols (TCP and UDP)
+Update the sniffer to print the TCP flags so you can identify SIN, RST or ACK packets
+Update the sniffer to print the ICMP message type and code
+Detect a potential Xmas scan checking the TCP flags of the packets you capture
+… much more
+Get your hands dirty and don’t be a skid :wink:
