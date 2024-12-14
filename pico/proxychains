@@ -1,0 +1,398 @@
+Welcome to this new series intended to explain the guts of all those hacker’s tools out there you use or want to use… Basically, we are going to explain you how does they work and how do you can build your own… Keep reading if you do not want to be a Skid ;).
+
+We will start the series with Proxychains. Before, keeping on reading, make sure you had read the 0x00sec introduction from @OilSlick to () ProxyChains 73.
+Hello everyone of 0x00!
+
+I figured why not make my first contribution, so heres a quick one :beers:
+
+Today, im going to brush the topic of proxies, followed by how to set up ProxyChains 81 to make being tracked a bit harder.
+
+So first things first. What is a proxy?
+
+In computer networks, a proxy server is a server (a computer system or an application) that acts as an intermediary for requests from clients seeking resources from other servers. –Proxy Server - Wikipedia 24
+
+What a proxy does, is essentially performs the connection for you, putting another computer between you and your destination. For example. I wish to connect to https://0x00sec.org 28. Normally, when i enter the address in my search bar in my browser, my computer firstly resolves the hostname to an ip address, from which point my computer would attempt to make a connection and retrieve the webpage. Which would leave my IP address in the access log of said webpage. Not good for anyone hoping to be anonymous.
+Now, when using a proxy server in the above example, the order of connection would go My Computer → Proxy Server → 0x00sec. Thus leaving the IP of the proxy in any logs as opposed to my IP address.
+
+A proxy is all well and good. However, the proxy has my IP address, so if I were to do anything bad, anyone trying to unmask me could contact said proxy,(given they have legal right to do so) and trace my IP back to me.
+
+Enter ProxyChains.
+
+What is ProxyChains?
+
+proxychains - a tool that forces any TCP connection made by any given application
+to follow through proxy like TOR or any other SOCKS4, SOCKS5 or HTTP(S) proxy.
+Supported auth-types: “user/pass” for SOCKS4/5, “basic” for HTTP.
+
+–ProxyChains - SourceForge 42
+
+What ProxyChains does is send your connection through multiple SOCKS/HTTP(S) proxy servers.
+So, using the above example, instead of Me → Proxy → 0x00sec.org 2
+It would be more as follows, Me → Proxy1.us 12 → Proxy2.ru 9 → Proxy3.se → Proxy4.uk 1 → 0x00sec
+
+Now, why is this important? If you recall, each proxy retains the previous connecting address, So Proxy1 has my IP, Proxy2 has Proxy1 IP, and so on and so forth.
+So, in a scenario of anonymity in the case of someone trying to unmask you, They have to jump through many more hoops to try to get back to your original IP.
+
+ProxyChains can be used with TOR 36, but im not getting into that due to anyone who hasnt used TOR before would require me doing a guide on that. Maybe another time.
+
+Also, one final note before I get into installation and configuration.
+
+Proxies are not perfect, and by no means 100% anonymity. This not only depends on the proxy you are using, where it is located, the laws in the country and its personal logging. Some Proxies are Transparent 72, some are not. For the sake of staying an introduction ill leave further research into proxies (SOCKS, HTTP, Transparent, Reverse, etc.) to the reader. I cant give it all to you :slight_smile: however maybe in a follow up post.
+
+I Personally would recommend using a handful of proxies, and making sure of a few of them are outside your countries jurisdiction. So in the US, i would use a few in the russian federation and sweden for example.
+
+Here are some lists of proxies that show their country, DISCLAIMER I have not used these proxies nor can i verify their integrity, they are here for examples sake, i recommend researching which proxies youd like to use before relying on them too heavily!**
+Socks Proxies 229
+HTTP(S) Proxies 126
+
+In the future ill update this post with some reliable proxy lists if there is enough response for such.
+
+Now onto ProxyChains!
+
+ProxyChains runs on *nix OS’s, so for this example, im running lubuntu.
+
+So to install proxy chains, were going to open up a terminal and fire off the command
+sudo apt-get install proxychains
+I already have proxychains installed or i would show the install screenshot.
+
+After installation finishes, you can check proxychains is installed by simply typing proxychains into your terminal. Which if installed, should yield the usage screen as shown below:
+
+
+
+Now, to get proxychains up and running. If you arent sure where to find your proxychains config file, you can run the
+locate proxychains command, which will yield:
+
+
+
+However, to my knowledge it is normally located at /etc/proxychains.conf
+so go ahead and type sudo vim /etc/proxychains.conf in your terminal which will bring you to:
+
+
+
+(if you dont have vim installed its just a sudo apt-get install vim away!)
+
+In this how-to were going to be setting up a dynamic_chain. Which will run through your list of proxies and if any are offline, it will skip them. ProxyChains also has strict_chain mode, which will try every proxy in the list and all must be online for it to route.
+
+Also, take note of the random_chain option, which when used will use proxies from your config file in a random series.
+
+Note, only one of the “option”_chain options can be used at one time
+
+Press I for insert mode, and go ahead and comment the strict_chain line and uncomment the dynamic_chain option in your conf file so it looks like this:
+
+
+
+now press press esc and type :save /etc/proxychains.conf
+
+So now proxychains will use dynamic chaining when we get around to running it.
+
+Open your conf file back up.
+If you hit page down, you’ll notice proxy_dns is already set by default. This will route all attempts at resolving domain names through your proxy, which If im not mistaken can AID in stopping DNS leaks 47. Anyone feel free to chime in if im incorrect :blush: If you hit page down again, it will take you to the [ProxyList] section. This is where you will list all of your proxies you want proxychains to connect through.
+
+Note it defaults to TOR
+
+
+
+So here were going to comment out the default entry, same as before, i for insert, comment out the line.
+
+Now were going to add a few proxies.
+
+
+
+then backout with esc , :save /etc/proxychains.conf
+
+Okay, all set! Now, to give her a test run!
+
+To run a program through proxychains, you use proxychains <program> <program parameters>
+
+For example, you could run proxychains nmap <IP address>, firefox, ssh, or wget just to name a few.
+
+Now, the proxies i used in my screenshot are invalid :cry: So you wont have luck with them.
+
+Running nmap through proxychains:
+
+
+
+So final words, Find yourself some proxies, and get out there with proxychains!
+
+*If anyone has any questions, comments, or areas where you feel im incorrect/need more detail, reach out and ill edit as necessary :slight_smile:
+
+To understand how ProxyChains works we first need to understand how does a proxy works…So let’s code one!
+
+Coding a Proxy
+Proxychains supports HTTP and SOCKS proxies. Conceptually they are the same thing. They just differ in the way, the clients (your web browser for instance) interchange information with the proxy itself…
+
+For the sake of simplicity we are going to code a simple (very simple) HTTP proxy. Improving this proxy and adding SOCKS capabilities will be an interesting exercise for the reader (do you know that access to Tor is perform via a SOCKS proxy?..)
+
+So, our proxy is going to be pretty simple:
+
+We start a server waiting for connections
+When we get a connection, we read the client request. This request will tell us where we should connect to.
+After that, we just read data from the client and send it to the target server, and we also read the replies for the server and send them back to the client
+If you had read my series on Remote Shells (Part I 35 and Part II 19) all these should sound familiar. Yes, we have already written most of the code we need. So let’s start from the part II code and do some modifications
+
+Changing a Remote Shell into a Proxy
+The first thing to do is to delete the remote_shell function. We do not need that. Then we just need to change our main function, and add an extra function… Yes. Really. It’s that easy.
+
+This is how the main function will look like:
+
+int
+main (int argc, char *argv[])
+{
+  int  s, c;
+  char buffer[2048];
+
+  s = server_init (atoi(argv[1]));
+  read (s, buffer, 2048);
+  c = process_request (buffer);
+
+  async_read (s, c);
+
+  return 0;
+}
+We just start our server listening in the port we passed as parameter from the command line. Then we read the request from the just connected client and call a function we have called process_request. This function will parse the client request and establish the proper connection as per the client request.
+
+Now we have a client socket s, connected to our proxy, for instance from a web browser. Another socket (c), connects our proxy to the server the client wanted to connect to. So, we just call our async_read function and we get those two ends up and running interchanging information.
+
+HTTP Proxies
+To complete our proxy we have to write the process_request function, and for that we have to know how does an HTTP proxy request looks like. Well, it looks like a normal HTTP request, something like this:
+
+GET http://server:port/page HTTP/1.0
+
+This is what we are going to receive from a browser using a HTTP proxy. Let’s try:
+
+In one terminal launch a listening netcat:
+
+$ nc -l 8081
+In another terminal, configure your proxy. It has to be localhost:8081 so we get the request in the netcat server running in the first terminal. Finally, launch the lynx web browser:
+
+$ export http_proxy=http://127.0.0.1:8081
+$ lynx http://127.0.0.1:1234
+In your netcat terminal you will see the information sent by the browser:
+
+GET http://127.0.0.1:1234/ HTTP/1.0 Host: google.com Accept: text/html, text/plain, text/css, text/sgml, */*;q=0.01 Accept-Encoding: gzip, compress, bzip2 Accept-Language: en User-Agent: Lynx/...
+
+So, let’ build a quick and dirty parser for these requests.
+
+Parsing an HTTP Proxy request
+This is how our parser looks like.
+
+int
+process_request (char *buffer)
+{
+  int  port, c;
+  char *aux;
+  char ip[1024];
+
+  sscanf (buffer, "GET http://%s/", ip);
+  if ((aux = strchr (ip, ':'))) 
+    {
+      *aux = 0;
+      sscanf (aux+1, "%d", &port);
+    }
+  else port = 80;
+
+  printf ("Request to connect to: %s(%d)\n", ip, port);
+  c = client_init (ip, port);
+  return c;
+}
+It is ugly, but parsing strings is not the topic we are actually interested on. The code just extracts the ip and the port from the HTTP request and then it creates a client socket to connect to that server.
+
+Note that you cannot use server names. For doing that you have to change the client_init function to actually resolve the name. It is not difficult but, as it happened with the parser, it does not bring much value to the current discussion. So, you had just got another exercise if you want.
+
+Testing our proxy
+To test our proxy, we need 3 terminals!.. WoW
+
+In the first terminal we launch our proxy:
+
+$ ./proxy 8081
+In the second we launch our target server. The one we want to connect to using the proxy:
+
+$ nc -l 1234
+Finally, in the third one we launch lynx connecting through our proxy:
+
+$ export http_proxy=http://127.0.0.1:8081
+$ lynx http://127.0.0.1:1234
+To complete the test, in the target netcat terminal (the one listening in port 1234 and acting as the final web server), we send back a HTTP reply so lynx gets the page it was requesting.
+
+$ nc -v -l 1234
+HTTP/1.0 200 OK
+Content-Type: text/html
+
+<html><body><h1>Hello</h1></body></html>
+
+You have to press CTRL+C on the netcat server terminal to close the connection and force lynx to show the page.
+
+Very good. Now we have a pretty simple proxy server for our tests. Yes, indeed we could have used one of the already available proxies in our GNU/Linux distros… but then, you will not know how to build your own :wink:
+
+Back to ProxyChains
+So, ProxyChains basically gets a list of proxies, and, when the user request to access some service, it sends a bunch of requests, similar to the ones we used in our example below, to connect from one proxy to another, until the actual request to the target machine reaches the last proxy in the chain.
+
+So, it connects to a proxy, and instead of providing the address for the server to access, it provides a new request to another proxy, opening one by one multiple connections through different machines.
+
+There is a bunch of code (you should take a look) in the project to manage the list of proxies, select them re-connect, etc… All that part is complex, but does not really have to do with security, it is normal software business.
+
+However what it is hacking related is how does ProxyChains allows any application (that does not even supports proxy connections) to establish that chain. The answer is LD_PRELOAD.
+
+LD_PRELOAD
+LD_PRELOAD is an environmental variable that allows us to specify some dynamic libraries that will be pre-loaded automatically and can, therefore, overwrite certain functions in the code.
+
+So, how is this used by Proxychains?. You just need to provide a shared library that changes the behavior of the connect function. Instead of connecting to where the application wants it to connect, we will change the function to connect to our proxy and generate a connection request to get our data through the proxy.
+
+This is a possible simple implementation:
+
+int connect(int sockfd, const struct sockaddr *addr,
+	    socklen_t addrlen)
+{
+
+  int                 s, port;
+  struct sockaddr_in  serv, *cli;
+  char                req[1024], *ip;
+  int                 (*real_connect) (int sockfd, 
+                       const struct sockaddr *addr,
+                       socklen_t addrlen);
+  /* get pointer to original connect function */
+  real_connect = dlsym (RTLD_NEXT, "connect");
+
+  /* Obtain text info to build the proxy connection request */
+  cli = (struct sockaddr_in*)addr;
+
+  ip   = inet_ntoa (cli->sin_addr);
+  port = ntohs (cli->sin_port);
+
+  /* Create a new socket as the other one is currently trying to connect*/
+  /* Otherwise we get a 'connect:: Operation now in progress' error */
+  if ((s = socket (AF_INET, SOCK_STREAM, 0)) < 0)
+    {
+      perror ("socket:"); exit (EXIT_FAILURE);
+    }
+
+  /* Swap file descriptors */
+  close (sockfd);
+  dup2 (s,sockfd);
+
+  /* Connect to proxy */
+  serv.sin_family = AF_INET;
+  serv.sin_port = htons(atoi(getenv("MY_PROXY_PORT")));
+  serv.sin_addr.s_addr = inet_addr(getenv("MY_PROXY"));
+
+  if (real_connect (s, (struct sockaddr *) &serv, sizeof(serv)) < 0) 
+    {
+      perror("connect:"); exit (EXIT_FAILURE);
+    }
+
+  /* Send proxy connection request */
+  sprintf (req, "GET http://%s:%d HTTP/1.1\r\n\r\n", ip, port);
+  write (s, req, strlen(req));
+
+  return 0;
+}
+
+OK, it is not that simple and it might even look scary at first glance, but it is not that bad. Just take a cup of coffee and keep calm.
+
+Getting the original connect
+We are overwriting the connect function but, at some point we will have to actually connect to somewhere. That means that we will have to invoke the original connect function later in our code.
+
+So, the first thing we have to do is to grab the pointer to the original function. And we have to do two things to do that.
+
+Declare a function pointer
+Get the pointer to the original function.
+A function pointer in C is declared as a normal function prototype but enclosing the function name in parenthesis and prefixing it with an *. Our function pointer looks like this:
+
+int (*real_connect) (int sockfd, const struct sockaddr *addr, socklen_t addrlen);
+That declares a variable named real_connect that will point to a function with the indicated prototype. In this case the prototype of the connect function. So far, so good.
+
+To actually get the pointer to the original connect we use the dlsym function provided by the dl (dynamic linking) library. Yes, we have to link against that library and we also have to add a header file and ask for the GNU extensions… Just take a look to the final code in github 15.
+
+The line that gets the function pointer is:
+
+ real_connect = dlsym (RTLD_NEXT, "connect");
+This function looks for the “NEXT” definition of the connect function in the process symbol list. Note that you can pre-load many libraries and you may have multiple definitions of the same function. The RTLD_NEXT allows you to find the next pointer for the indicated symbol in the chain.
+
+Obtaining the original connection information
+The next thing we have to do is to convert the server information provided to the connect function (received as the parameter addr) to strings, so we can build an HTTP request for our HTTP proxy.
+
+We easily get this information using inet_ntoa (ntoa stands for network to ASCII/string) and ntohs (network to host short). The three lines below do the trick.
+
+  cli = (struct sockaddr_in*)addr;
+  ip   = inet_ntoa (cli->sin_addr);
+  port = ntohs (cli->sin_port);
+Preparing the connection
+If we just try to call the real_connect now, passing the socket we got from the top level application, we will get an error (at least that is what I’ve got):
+
+Operation now in progress' error
+
+I haven’t fully investigated why does this happen, so I just went for a workaround. I will create a new socket, and then use the dup2 function call to assign it the same file descriptor that the original socket created by the top level application. This way, all the later operations on the socket will just be performed on this new created socket, instead of on the original socket created by the top level application.
+
+  if ((s = socket (AF_INET, SOCK_STREAM, 0)) < 0)
+    {
+      perror ("socket:");
+      exit (EXIT_FAILURE);
+    }
+
+  /* Swap file descriptors */
+  close (sockfd);
+  dup2 (s,sockfd);
+Connect to the proxy
+Now we can connect to our proxy server. The code for this process, is overall the same that the one we used in the Remote Shell series (check the client_init function). There are only two minor changes we have done to the code.
+
+  /* Connect to proxy */
+  serv.sin_family = AF_INET;
+  serv.sin_port = htons(atoi(getenv("MY_PROXY_PORT")));
+  serv.sin_addr.s_addr = inet_addr(getenv("MY_PROXY"));
+
+  if (real_connect (s, (struct sockaddr *) &serv, sizeof(serv)) < 0) 
+    {
+      perror("connect:");
+      exit (EXIT_FAILURE);
+    }
+We are taking the proxy IP and the proxy port from two environmental variables. We did it like this so we do not have to parse the URL required by the http_proxy env var, and we do not write all the code to manage files with proxies lists as ProxyChains does.
+Instead of calling connect, we call real_connect, otherwise we will call this same function again and we will get in an infinite loop.
+Sending the HTTP request
+Everything is in place right now, so we just need to send our connection request to the proxy to get the top level application connected to the original server. Nothing special here, just build the request string and send it out.
+
+  /* Send proxy connection request */
+  sprintf (req, "GET http://%s:%d HTTP/1.1\r\n\r\n", ip, port);
+  write (s, req, strlen(req));
+Compiling the shared library
+Our library code is ready and now we have to compile it. You can do it as you prefer (setup some autotools project, using cmake, with a Makefile, manually). We just put a couple of rules in a Makefile
+
+proxify.o:proxify.c
+	${CC} -c -fpic -o $@ $<
+
+libproxify.so:proxify.o
+	${CC} -shared -o $@ $< -ldl
+
+The first rule produces a pic (Position Independent Code) object file and the second one links it into a dynamic library (.so) and adds the dl library we mentioned before (in order to use dlsym).
+
+If on doubt just clone the github repo.
+
+Testing our Proxyfier
+So, the testing will be exactly the same that in our previous case but, instead of setting the system http_proxy env var, we are going to preload our proxifier library.
+
+Launch the target netcat at 1234 and the proxy at whatever port you like. I will use 8081 as example in the commands below:
+
+In a different console:
+
+$ unset http_proxy
+$ lynx http://127.0.0.1:1234
+We should get a direct connection to the netcat listening on 1234. Nothing shown in our proxy terminal. Now let’s proxify lynx (you may need to relaunch netcat in the first terminal).
+
+$ export MY_PROXY=127.0.0.1
+$ export MY_PROXY_PORT=8081
+$ LD_PRELOAD= ./libproxify.so lynx http://127.0.0.1:1234
+Did it work?.. Hope so, it worked for me.
+
+Going Further
+Now, you know the basis of how does a proxy works, how to override functions in a program to proxify it and the basics of how proxy chain works. What you can do from this point on:
+
+Modify the program to chain multiple proxies. Basically you will have to produce many connection request in your version of connect
+Extend the program to use domain names instead of just IP addresses, otherwise it will not work in a real world scenario
+Implement a SOCKS proxy and a SOCK proxify library
+Note that, the code as presented in this tutorial will not properly work on the wild. This is done on purpose… because… you do not want to be a skid!, don’t you?
+
+A Final note
+You may have heard that you can run nmap through a proxy chain. This is indeed true but only if you use a fully connected scan, that is pretty noisy… None of the stealth scans will work and I hope you know now why.
+
+Happy Hacking
+pico
+
