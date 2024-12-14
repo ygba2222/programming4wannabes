@@ -240,3 +240,13 @@ Update the sniffer to print the ICMP message type and code
 Detect a potential Xmas scan checking the TCP flags of the packets you capture
 … much more
 Get your hands dirty and don’t be a skid :wink:
+
+Dammit! I was thinking of making a post on libpcap sniffing as well but you were faster xD Fantastic article once again @0x00pf, you explained it better than I would.
+
+Some notes:
+
+For the people who didn’t know, Promiscuous mode means to sniff all traffic on the wire. On the other side, during non-promiscuous sniffing, a host is sniffing only traffic to, from, or routed through the chosen interface so be careful which mode you choose because you may get unwanted results.
+
+Another interesting function of libpcap is the int pcap_findalldevs(pcap_if_t **alldevsp, char *errbuf) which will give you a list of all the available interfaces on your machine from which you can choose the one to sniff on.
+
+After you choose your interface, you can find its IP Address and Subnet Mask via the pcap_lookupnet(interface, &raw_ip, &raw_subnet, errbuf) function (Keep in mind, it will not return them in network byte order so you will need to fix that.)
